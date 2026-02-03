@@ -1,0 +1,12 @@
+.DS_Store
+*.xcuserstate
+DerivedData/
+build/
+*.app
+*.dmg
+*.pkg
+xcuserdata/
+.gemini/
+.DS_Store
+*.swp
+*~
