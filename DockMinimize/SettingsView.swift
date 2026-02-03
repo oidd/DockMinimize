@@ -24,11 +24,11 @@ struct SettingsView: View {
         
         func iconName() -> String {
             switch self {
-            case .permissions: return "lock.shield"
-            case .general: return "gearshape"
-            case .smallWindowPreview: return "eye"
-            case .blacklist: return "nosign"
-            case .about: return "info.circle"
+            case .permissions: return "lock.shield.fill"
+            case .general: return "gearshape.fill"
+            case .smallWindowPreview: return "macwindow.fill"
+            case .blacklist: return "minus.circle.fill"
+            case .about: return "info.circle.fill"
             }
         }
         
@@ -46,15 +46,14 @@ struct SettingsView: View {
     var body: some View {
         if #available(macOS 13.0, *) {
             NavigationSplitView {
-                List(SettingsTab.allCases, id: \.self, selection: $selectedTab) { tab in
-                    NavigationLink(value: tab) {
-                        Label {
-                            Text(tab.displayName(t: t))
-                        } icon: {
-                            Image(systemName: tab.iconName())
-                        }
+                List {
+                    ForEach(SettingsTab.allCases, id: \.self) { tab in
+                        SidebarRow(tab: tab, selectedTab: $selectedTab, t: t)
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
                     }
                 }
+                .listStyle(.sidebar)
                 .navigationTitle("Dock Minimize")
                 .safeAreaInset(edge: .bottom) {
                     Button(action: {
@@ -209,7 +208,7 @@ struct SettingsView: View {
                 url: "https://www.ivean.com/quicksearch/"
             ),
             RecommendedTool(
-                name: t("多次高亮查找", "Multi-Keyword Highlighter"),
+                name: t("多词高亮查找", "Multi-Keyword Highlighter"),
                 slogan: t("告别低效，开启专业的多词批量高亮检索新纪元。", "Efficient multi-keyword highlighting for faster information retrieval."),
                 iconName: "highlighter",
                 url: "https://ivean.com/highlighter/"
@@ -382,15 +381,19 @@ struct SettingsView: View {
         }
     }
 
-private func toggleRow(icon: String, title: String, isOn: Binding<Bool>) -> some View {
+private func toggleRow(icon: String? = nil, title: String, isOn: Binding<Bool>) -> some View {
     HStack {
-        Image(systemName: icon)
-            .font(.system(size: 18))
-            .frame(width: 30, alignment: .center) // 3. 统一图标宽度 30
-            .foregroundColor(.accentColor)
+        if let icon = icon {
+            Image(systemName: icon)
+                .font(.system(size: 18))
+                .frame(width: 30, alignment: .center)
+                .foregroundColor(.accentColor)
+        }
         
-        Text(title)
-            .font(.system(size: 14))
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.system(size: 14))
+        }
         
         Spacer()
         
@@ -405,12 +408,12 @@ private func toggleRow(icon: String, title: String, isOn: Binding<Bool>) -> some
 private var smallWindowPreviewContent: some View {
     VStack(spacing: 20) {
         GroupBox {
-            toggleRow(
-                icon: "eye.fill", // 保持 fill 版本
-                title: t("启用小窗预览", "Enable Small Window Preview"),
-                isOn: $settingsManager.hoverPreviewEnabled
-            )
-            .padding(-8) // 抵消 GroupBox 默认 padding
+            VStack(spacing: 0) {
+                toggleRow(
+                    title: t("启用小窗预览", "Enable Small Window Preview"),
+                    isOn: $settingsManager.hoverPreviewEnabled
+                )
+            }
             .onChange(of: settingsManager.hoverPreviewEnabled) { newValue in
                 if newValue { PreviewBarController.shared.start() }
                 else { PreviewBarController.shared.stop() }
@@ -426,7 +429,7 @@ private var smallWindowPreviewContent: some View {
                         isOn: $settingsManager.enableIndependentWindowControl
                     )
                     
-                    Divider().padding(.leading, 16)
+                    Divider().padding(.leading, 12)
                     
                     toggleRowWithDesc(
                         title: t("原位预览", "Original Preview"),
@@ -434,7 +437,7 @@ private var smallWindowPreviewContent: some View {
                         isOn: $settingsManager.enableOriginalPreview
                     )
                 }
-                .padding(4)
+                .padding(.vertical, 4)
             }
         }
     }
@@ -443,8 +446,8 @@ private var smallWindowPreviewContent: some View {
 private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>) -> some View {
     HStack {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.body)
-            Text(desc).font(.caption).foregroundColor(.secondary)
+            Text(title).font(.system(size: 14))
+            Text(desc).font(.system(size: 11)).foregroundColor(.secondary)
         }
         Spacer()
         Toggle("", isOn: isOn)
@@ -582,7 +585,66 @@ private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>)
     private func t(_ zh: String, _ en: String) -> String {
         return settingsManager.t(zh, en)
     }
+    
+    // MARK: - Sidebar Row View
+    private struct SidebarRow: View {
+        let tab: SettingsTab
+        @Binding var selectedTab: SettingsTab
+        let t: (String, String) -> String
+        @State private var isHovered = false
+        
+        var isSelected: Bool {
+            selectedTab == tab
+        }
+        
+        var body: some View {
+            HStack(spacing: 12) {
+                if tab == .smallWindowPreview {
+                    // 自定义绘制一个小窗预览图标，避免实心块过重
+                    ZStack(alignment: .bottomTrailing) {
+                        RoundedRectangle(cornerRadius: 3.5)
+                            .fill(isSelected ? Color.white : Color.accentColor)
+                            .frame(width: 17, height: 13)
+                        
+                        // 象征预览的小框，使用背景色造成“透射”效果
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(isSelected ? Color.accentColor : Color.white)
+                            .frame(width: 7, height: 5)
+                            .padding(1.5)
+                    }
+                    .frame(width: 24, alignment: .center)
+                } else {
+                    Image(systemName: tab.iconName())
+                        .imageScale(.medium)
+                        .font(.system(size: 17))
+                        .symbolRenderingMode(.monochrome)
+                        .frame(width: 24, alignment: .center)
+                        .foregroundColor(isSelected ? .white : .accentColor)
+                }
+                
+                Text(tab.displayName(t: t))
+                    .font(.system(size: 14, weight: isSelected ? .medium : .regular))
+                    .foregroundColor(isSelected ? .white : .primary)
+                
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? Color.accentColor : (isHovered ? Color.primary.opacity(0.05) : Color.clear))
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovered = hovering
+            }
+            .onTapGesture {
+                selectedTab = tab
+            }
+        }
+    }
 }
+
 
 // MARK: - About Tab Components
 
@@ -608,7 +670,7 @@ struct RecommendationRow: View {
         }) {
             HStack(spacing: 12) {
                 // Icon
-                if let iconUrl = Bundle.main.url(forResource: tool.iconName, withExtension: "png") {
+                if let iconUrl = Bundle.main.url(forResource: tool.iconName, withExtension: "png", subdirectory: "Recommends") {
                     if let nsImage = NSImage(contentsOf: iconUrl) {
                         Image(nsImage: nsImage)
                             .resizable()
@@ -674,3 +736,5 @@ struct RecommendationRow: View {
         }
     }
 }
+
+

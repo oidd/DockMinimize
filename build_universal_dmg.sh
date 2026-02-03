@@ -44,6 +44,10 @@ cp -R "$RAW_APP" .
 cp "$APP_NAME/AppIcon.icns" "$APP_NAME.app/Contents/Resources/AppIcon.icns"
 cp "$APP_NAME/Assets.xcassets/MenuBarIcon.imageset/menu.png" "$APP_NAME.app/Contents/Resources/menu_icon.png"
 
+# 注入推荐工具图标
+mkdir -p "$APP_NAME.app/Contents/Resources/Recommends"
+cp -R "$APP_NAME/Resources/Recommends/" "$APP_NAME.app/Contents/Resources/Recommends/"
+
 # 2. 修正 Info.plist 图标引用
 plutil -replace CFBundleIconFile -string AppIcon "$APP_NAME.app/Contents/Info.plist"
 
