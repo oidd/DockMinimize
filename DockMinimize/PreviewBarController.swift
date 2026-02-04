@@ -14,6 +14,12 @@ class PreviewBarController: NSObject {
     
     private let log = DebugLogger.shared
     private var cancellables = Set<AnyCancellable>()
+
+    private enum DockOrientation: String {
+        case bottom
+        case left
+        case right
+    }
     
     /// 悬停事件监听器
     private let hoverMonitor = HoverEventMonitor()
@@ -79,6 +85,98 @@ class PreviewBarController: NSObject {
             // C. 只有点击桌面、其他窗口等真正“离开”的操作，才立刻强制关闭
             self.stateManager.hidePreview()
         }
+    }
+
+    private func currentDockOrientation() -> DockOrientation? {
+        let dockDefaults = UserDefaults(suiteName: "com.apple.dock")
+        if let value = dockDefaults?.string(forKey: "orientation")?.lowercased() {
+            return DockOrientation(rawValue: value)
+        }
+        return nil
+    }
+
+    private func dockThickness(on screen: NSScreen, orientation: DockOrientation) -> CGFloat {
+        let screenFrame = screen.frame
+        let visibleFrame = screen.visibleFrame
+
+        let inferred: CGFloat
+        switch orientation {
+        case .bottom:
+            inferred = visibleFrame.minY - screenFrame.minY
+        case .left:
+            inferred = visibleFrame.minX - screenFrame.minX
+        case .right:
+            inferred = screenFrame.maxX - visibleFrame.maxX
+        }
+
+        if inferred > 1 {
+            return inferred
+        }
+
+        // Dock is likely auto-hidden; estimate thickness from icon cache (best effort).
+        if let first = DockIconCacheManager.shared.cachedIcons.first {
+            var union = first.frame
+            for icon in DockIconCacheManager.shared.cachedIcons.dropFirst() {
+                union = union.union(icon.frame)
+            }
+
+            switch orientation {
+            case .bottom:
+                return union.height + 16
+            case .left, .right:
+                return union.width + 16
+            }
+        }
+
+        // Fallback to tilesize.
+        let tileSize = CGFloat(UserDefaults(suiteName: "com.apple.dock")?.double(forKey: "tilesize") ?? 48)
+        switch orientation {
+        case .bottom:
+            return tileSize + 24
+        case .left, .right:
+            return tileSize + 16
+        }
+    }
+
+    private func adjustedFrameToLeaveSpaceForDock(_ frame: CGRect, on screen: NSScreen) -> CGRect {
+        guard let orientation = currentDockOrientation() else { return frame }
+
+        let dockGap: CGFloat = 12
+        let edgeMargin: CGFloat = 8
+        let reserved = dockThickness(on: screen, orientation: orientation) + dockGap
+
+        let screenFrame = screen.frame
+        var adjusted = frame
+
+        switch orientation {
+        case .right:
+            let maxAllowedMaxX = screenFrame.maxX - reserved
+            if adjusted.maxX > maxAllowedMaxX {
+                adjusted.origin.x -= (adjusted.maxX - maxAllowedMaxX)
+            }
+        case .left:
+            let minAllowedMinX = screenFrame.minX + reserved
+            if adjusted.minX < minAllowedMinX {
+                adjusted.origin.x += (minAllowedMinX - adjusted.minX)
+            }
+        case .bottom:
+            let minAllowedMinY = screenFrame.minY + reserved
+            if adjusted.minY < minAllowedMinY {
+                adjusted.origin.y += (minAllowedMinY - adjusted.minY)
+            }
+        }
+
+        // Final clamp (avoid going out of screen due to docking adjustments).
+        adjusted.origin.x = min(
+            max(adjusted.origin.x, screenFrame.minX + edgeMargin),
+            screenFrame.maxX - adjusted.width - edgeMargin
+        )
+        adjusted.origin.y = min(
+            max(adjusted.origin.y, screenFrame.minY + edgeMargin),
+            screenFrame.maxY - adjusted.height - edgeMargin
+        )
+
+        return adjusted
     }
     
     /// 启动预览功能
@@ -612,6 +710,13 @@ extension PreviewBarController: PreviewStateManagerDelegate {
             log.log("⚠️ No image captured for window \(windowId)")
             return 
         }
+
+        // Keep a copy for alignment decisions (cropped/out-of-bounds cases).
+        let originalTargetFrame = targetFrame
+
+        // Nudge away from Dock so the preview doesn't visually cover the Dock bar.
+        // Especially important when Dock is auto-hidden and can pop over windows.
+        targetFrame = adjustedFrameToLeaveSpaceForDock(targetFrame, on: screen)
         
         // 复用或创建窗口
         let window: NSWindow
@@ -643,7 +748,7 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         imageView.imageScaling = .scaleNone // 禁止任何缩放，保持 1:1
         
         // 计算对齐方式
-        if targetFrame.origin.x < 0 {
+        if originalTargetFrame.origin.x < 0 {
             // 窗口左侧出界：截图只有右半部 -> 内容右对齐
             imageView.imageAlignment = .alignTopRight
             log.log("📐 Alignment: .alignTopRight (Window left out)")
