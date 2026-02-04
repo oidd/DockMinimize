@@ -7,11 +7,13 @@
 
 import Cocoa
 import SwiftUI
+import Combine
 
 class PreviewBarController: NSObject {
     static let shared = PreviewBarController()
     
     private let log = DebugLogger.shared
+    private var cancellables = Set<AnyCancellable>()
     
     /// 悬停事件监听器
     private let hoverMonitor = HoverEventMonitor()
@@ -154,11 +156,32 @@ class PreviewBarController: NSObject {
             let openedWindowIds = Set(vm.windows.filter { !$0.isMinimized }.map { $0.windowId })
             stateManager.resetActiveWindows(openedWindowIds)
             
-            if previewWindow == nil { createPreviewWindow() }
             if let window = previewWindow {
                 // 确保 vm 没有因为 loadWindows 失败变为空（虽然逻辑上不会，但加个保险）
                 window.contentView = NSHostingView(rootView: PreviewBarView(viewModel: vm))
             }
+            
+            // ⭐️ 订阅窗口数量变化，动态调整容器尺寸
+            cancellables.removeAll()
+            vm.$lastWindowCount
+                .dropFirst() // 忽略初始加载
+                .sink { [weak self] count in
+                    guard let self = self, count > 0, let window = self.previewWindow else { return }
+                    
+                    self.log.log("📏 Window count changed to \(count), resizing container")
+                    let newSize = self.calculateWindowSize(windowCount: count)
+                    let newPos = self.calculateWindowPosition(iconPosition: position, windowSize: newSize)
+                    
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = 0.2
+                        context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                        window.animator().setFrame(CGRect(origin: newPos, size: newSize), display: true)
+                    }
+                    
+                    // 同步更新监听区域
+                    self.updateHoverMonitorFrame(windowFrame: CGRect(origin: newPos, size: newSize))
+                }
+                .store(in: &cancellables)
         }
         
         // 确保 vm 存在且有窗口
@@ -183,14 +206,7 @@ class PreviewBarController: NSObject {
         window.setFrameOrigin(windowPosition)
         
         // 更新预览条区域（用于鼠标检测）- 扩大检测区域，包含到 Dock 的过渡空间
-        let frame = window.frame
-        let expandedHeight = frame.height + 50 // 向下扩展 50px 覆盖到 Dock
-        hoverMonitor.previewBarFrame = CGRect(
-            x: frame.origin.x - 20, // 左右各扩展 20px
-            y: NSScreen.main!.frame.height - frame.origin.y - expandedHeight,
-            width: frame.width + 40,
-            height: expandedHeight
-        )
+        updateHoverMonitorFrame(windowFrame: window.frame)
         hoverMonitor.isPreviewBarVisible = true
         
         // 显示窗口
@@ -234,7 +250,17 @@ class PreviewBarController: NSObject {
     
     /// 让 WindowManager 访问 isTransitioning (Swift 属性默认 internal)
     /// 注意：如果 isTransitioning 是 private，需要修改 WindowManager.swift 
-    /// 我在下面确认一下 WindowManager 的属性可见性
+    
+    /// 更新监听区域
+    private func updateHoverMonitorFrame(windowFrame frame: CGRect) {
+        let expandedHeight = frame.height + 50 // 向下扩展 50px 覆盖到 Dock
+        hoverMonitor.previewBarFrame = CGRect(
+            x: frame.origin.x - 20, // 左右各扩展 20px
+            y: (NSScreen.main?.frame.height ?? 1080) - frame.origin.y - expandedHeight,
+            width: frame.width + 40,
+            height: expandedHeight
+        )
+    }
     
     /// 创建预览窗口
     private func createPreviewWindow() {

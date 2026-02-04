@@ -35,6 +35,9 @@ struct PreviewBarView: View {
                                 },
                                 onHover: { isHovered in
                                     viewModel.hoverWindow(window, isHovered: isHovered)
+                                },
+                                onClose: {
+                                    viewModel.closeWindow(window)
                                 }
                             )
                             .id(window.windowId)
@@ -230,6 +233,9 @@ class PreviewBarViewModel: ObservableObject {
     /// 用于触发上抬动画
     @Published var bumpTriggers: [CGWindowID: Date] = [:]
     
+    /// ⭐️ 用于观察窗口数量变化，通知 Controller 刷新 Frame
+    @Published var lastWindowCount: Int = 0
+    
     let log = DebugLogger.shared
     let thumbnailService = WindowThumbnailService.shared
     let stateManager: PreviewStateManager
@@ -243,6 +249,35 @@ class PreviewBarViewModel: ObservableObject {
     init(stateManager: PreviewStateManager) { 
         self.stateManager = stateManager
         setupDockClickObserver()
+        setupWindowCloseObserver()
+    }
+    
+    private func setupWindowCloseObserver() {
+        NotificationCenter.default.addObserver(self, selector: #selector(handleWindowClose(_:)), name: NSNotification.Name("WindowDidClose"), object: nil)
+    }
+    
+    @objc private func handleWindowClose(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let windowId = userInfo["windowId"] as? CGWindowID else { return }
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // 从列表中移除关闭的窗口
+            if let index = self.windows.firstIndex(where: { $0.windowId == windowId }) {
+                self.log.log("🗑️ UI Sync: Window \(windowId) closed, removing from list")
+                self.windows.remove(at: index)
+                self.lastWindowCount = self.windows.count
+                
+                // 如果窗口列表变为空，通知管理器隐藏预览条
+                if self.windows.isEmpty {
+                    self.log.log("🗑️ All windows closed, hiding preview bar")
+                    // 手动触发状态机退场
+                    self.stateManager.hidePreview()
+                }
+                
+                self.updateScrollIndicators()
+            }
+        }
     }
     
     deinit {
@@ -383,6 +418,11 @@ class PreviewBarViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in 
             self?.refreshThumbnails(forceRefresh: true) 
         }
+    }
+    
+    func closeWindow(_ window: WindowThumbnailService.WindowInfo) {
+        log.log("🖱️ User clicked close button for window \(window.windowId)")
+        WindowManager.shared.closeWindow(window)
     }
     
     func hoverWindow(_ window: WindowThumbnailService.WindowInfo, isHovered: Bool) {

@@ -124,6 +124,17 @@ class WindowManager {
         }
     }
     
+    /// 关闭特定窗口
+    func closeWindow(_ window: WindowThumbnailService.WindowInfo) {
+        if let closeBtn = window.closeButton {
+            // 执行关闭动作
+            AXUIElementPerformAction(closeBtn, kAXPressAction as CFString)
+            
+            // 发送通知，告知 UI 更新列表
+            NotificationCenter.default.post(name: NSNotification.Name("WindowDidClose"), object: nil, userInfo: ["windowId": window.windowId])
+        }
+    }
+    
     // MARK: - 隐藏模式
     
     private func toggleHide(for app: NSRunningApplication, bundleId: String) {

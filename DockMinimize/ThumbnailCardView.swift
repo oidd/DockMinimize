@@ -17,6 +17,7 @@ struct ThumbnailCardView: View {
     
     let onClick: () -> Void
     let onHover: (Bool) -> Void
+    let onClose: () -> Void
     
     /// 缩略图尺寸
     private let thumbnailWidth: CGFloat = 160
@@ -52,6 +53,32 @@ struct ThumbnailCardView: View {
                     // 占位符
                     Image(systemName: "rectangle.on.rectangle")
                         .font(.system(size: 32))
+                }
+                
+                // ⭐️ 新增：一键关闭按钮
+                // 仅在鼠标悬浮时出现
+                if isHovered {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Button(action: {
+                                onClose()
+                            }) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.gray.opacity(0.8))
+                                        .frame(width: 20, height: 20)
+                                    
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .padding([.top, .trailing], 6)
+                        }
+                        Spacer()
+                    }
                 }
             }
             .scaleEffect(isHovered ? 1.05 : 1.0)
@@ -112,7 +139,8 @@ struct ThumbnailCardView_Previews: PreviewProvider {
                 isActive: false,
                 isHovered: false,
                 onClick: {},
-                onHover: { _ in }
+                onHover: { _ in },
+                onClose: {}
             )
             
             ThumbnailCardView(
@@ -121,7 +149,8 @@ struct ThumbnailCardView_Previews: PreviewProvider {
                 isActive: true,
                 isHovered: true,
                 onClick: {},
-                onHover: { _ in }
+                onHover: { _ in },
+                onClose: {}
             )
         }
         .padding()
