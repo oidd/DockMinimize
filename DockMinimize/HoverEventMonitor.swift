@@ -115,20 +115,8 @@ class HoverEventMonitor {
                     }
                 }
                 
-                let screenHeight = NSScreen.main?.frame.height ?? 800
-                let inDock = location.y > (screenHeight - 100)
-                
-                if !inDock {
-                    self.cancelHoverTimer()
-                    if self.lastHoveredApp != nil {
-                        self.lastHoveredApp = nil
-                        DispatchQueue.main.async { self.delegate?.hoverEventMonitorDidExitDock(self) }
-                    }
-                    semaphore.signal()
-                    return
-                }
-                
-                // 获取图标
+                // ⭐️ 命中测试：是否悬停在 Dock 图标上（纯内存操作）。
+                // 旧版本用“屏幕底部 100px”判定 Dock 区域，Dock 在左/右侧或在副屏时会导致悬停预览完全失效。
                 if let bundleId = DockIconCacheManager.shared.getBundleId(at: location) {
                     if bundleId != self.lastHoveredApp {
                         // ⭐️ 增加切换冷却（150ms），防止快速滑过时预览条“乱跳”
@@ -148,6 +136,8 @@ class HoverEventMonitor {
                         self.lastHoveredApp = nil
                         DispatchQueue.main.async { self.delegate?.hoverEventMonitorDidExitDock(self) }
                     }
+                    semaphore.signal()
+                    return
                 }
             }
             semaphore.signal()

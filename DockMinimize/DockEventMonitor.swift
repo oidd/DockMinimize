@@ -183,9 +183,9 @@ class DockEventMonitor {
         // 2. 右键/中键点击立刻关闭预览 (Dock 的右键菜单优先级最高)
         if type == .rightMouseDown || type == .otherMouseDown {
             let location = event.location
-            let screenHeight = NSScreen.main?.frame.height ?? 800
-            if location.y >= (screenHeight - 100) {
-                // 如果在 Dock 区域右键，通知预览条消失，且不拦截事件
+            // 旧版本用“屏幕底部 100px”判定 Dock 区域，Dock 在左/右侧或在副屏时会失效。
+            // 这里改为：命中任意 Dock 图标就认为在 Dock 区域（纯内存操作）。
+            if DockIconCacheManager.shared.getBundleId(at: location) != nil {
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(name: NSNotification.Name("HidePreviewBarForcefully"), object: nil)
                 }
@@ -197,9 +197,11 @@ class DockEventMonitor {
         
         let location = event.location
         
-        // 3. 检查是否在 Dock 区域 (仅使用内存中的 screen 尺寸)
-        let screenHeight = NSScreen.main?.frame.height ?? 800
-        if location.y < (screenHeight - 100) { return Unmanaged.passRetained(event) }
+        // 3. 快速命中测试：是否点在 Dock 图标上（纯内存操作，不触碰任何系统调用）
+        // 旧版本用“屏幕底部 100px”判定 Dock 区域，Dock 在左/右侧或在副屏时会完全失效。
+        guard let clickedBundleId = DockIconCacheManager.shared.getBundleId(at: location) else {
+            return Unmanaged.passRetained(event)
+        }
         
         // 防抖：缩短至 0.1s，适应快速连击
         if Date().timeIntervalSince(lastProcessedTime) < 0.1 { return Unmanaged.passRetained(event) }
@@ -219,73 +221,68 @@ class DockEventMonitor {
             
             // 下面的逻辑如果卡住了，也只卡在这个后台线程，主线程 10ms 后会直接跳过。
             do {
-                if let clickedBundleId = DockIconCacheManager.shared.getBundleId(at: location) {
-                    // 不需要在这里额外检查黑名单，因为 DockIconCacheManager.updateCache 已经排除了黑名单应用。
-                    // 只要 clickedBundleId 有值，就说明它是我们负责的应用。
+                // 不需要在这里额外检查黑名单，因为 DockIconCacheManager.updateCache 已经排除了黑名单应用。
+                // 只要 clickedBundleId 有值，就说明它是我们负责的应用。
+                
+                let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: clickedBundleId)
+                if let targetApp = runningApps.first {
+                    self.lastProcessedTime = Date()
                     
-                    let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: clickedBundleId)
-                    if let targetApp = runningApps.first {
-                        self.lastProcessedTime = Date()
-                        
-                        // ⭐️ 核心通用修复：无论前台还是后台，只要判定为“无窗口且非隐藏”，必须放行。
-                        // 这解决了 Finder/QSpace 在后台时点击需要两下（第一次被拦截）的问题。
-                        
-                        var hasVisibleWindows = false
-                        // 如果 App 是隐藏的，我们认为它可能有窗口（只是不可见），所以不放行，让 EnsureVisible 处理
-                        // 如果 App 不是隐藏的，我们检查屏幕上是否有窗口
-                        if !targetApp.isHidden {
-                            if let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
-                                for info in windowList {
-                                    guard let ownerPID = info[kCGWindowOwnerPID as String] as? Int, ownerPID == targetApp.processIdentifier else { continue }
-                                    guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
-                                    guard let alpha = info[kCGWindowAlpha as String] as? Double, alpha > 0.1 else { continue }
-                                    
-                                    if let bounds = info[kCGWindowBounds as String] as? [String: Double] {
-                                        let w = bounds["Width"] ?? 0
-                                        let h = bounds["Height"] ?? 0
-                                        if w < 100 || h < 100 { continue }
-                                    }
-                                    
-                                    hasVisibleWindows = true
-                                    break
+                    // ⭐️ 核心通用修复：无论前台还是后台，只要判定为“无窗口且非隐藏”，必须放行。
+                    // 这解决了 Finder/QSpace 在后台时点击需要两下（第一次被拦截）的问题。
+                    
+                    var hasVisibleWindows = false
+                    // 如果 App 是隐藏的，我们认为它可能有窗口（只是不可见），所以不放行，让 EnsureVisible 处理
+                    // 如果 App 不是隐藏的，我们检查屏幕上是否有窗口
+                    if !targetApp.isHidden {
+                        if let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
+                            for info in windowList {
+                                guard let ownerPID = info[kCGWindowOwnerPID as String] as? Int, ownerPID == targetApp.processIdentifier else { continue }
+                                guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
+                                guard let alpha = info[kCGWindowAlpha as String] as? Double, alpha > 0.1 else { continue }
+                                
+                                if let bounds = info[kCGWindowBounds as String] as? [String: Double] {
+                                    let w = bounds["Width"] ?? 0
+                                    let h = bounds["Height"] ?? 0
+                                    if w < 100 || h < 100 { continue }
                                 }
-                            }
-                            
-                            // ⭐️ 核心修复：如果是 Finder，即便没有可见窗口也要继续逻辑（去恢复被缩小的窗口）。
-                            // 如果是其他应用，确实没有窗口时才放行。
-                            // ⭐️ 核心修复：如果是 Finder，即便没有可见窗口也要继续逻辑（去恢复被缩小的窗口）。
-                            // 如果是其他应用，确实没有窗口时才放行。
-                            if !hasVisibleWindows && clickedBundleId != "com.apple.finder" {
-                                // App 未隐藏，但在屏幕上找不到 >100x100 的窗口 -> 真正的无窗口状态 -> 放行给系统 Reopen
-                                semaphore.signal()
-                                return
+                                
+                                hasVisibleWindows = true
+                                break
                             }
                         }
                         
-                        // ⭐️ UI 瞬间响应：先发通知，后调逻辑。保证指示条第一秒就变。
-                        // 如果已经在前台，意图是 Toggle (最小化/恢复)
-                        // 如果在后台，意图是 Activate (提升至最前)
-                        let isFinder = clickedBundleId == "com.apple.finder"
-                        let isAlreadyActive = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == clickedBundleId
-                        let action = isAlreadyActive ? "toggle" : "activate"
-                        
-                        NotificationCenter.default.post(
-                            name: NSNotification.Name("DockIconClicked"),
-                            object: nil,
-                            userInfo: ["bundleId": clickedBundleId, "action": action]
-                        )
-                        
-                        DispatchQueue.main.async { 
-                            if action == "toggle" {
-                                WindowManager.shared.toggleWindows(for: targetApp)
-                            } else {
-                                WindowManager.shared.ensureWindowsVisible(for: targetApp)
-                            }
+                        // ⭐️ 核心修复：如果是 Finder，即便没有可见窗口也要继续逻辑（去恢复被缩小的窗口）。
+                        // 如果是其他应用，确实没有窗口时才放行。
+                        if !hasVisibleWindows && clickedBundleId != "com.apple.finder" {
+                            // App 未隐藏，但在屏幕上找不到 >100x100 的窗口 -> 真正的无窗口状态 -> 放行给系统 Reopen
+                            semaphore.signal()
+                            return
                         }
-                        resultEvent = nil 
-                    } else {
-                        // 2. 该应用未运行...
                     }
+                    
+                    // ⭐️ UI 瞬间响应：先发通知，后调逻辑。保证指示条第一秒就变。
+                    // 如果已经在前台，意图是 Toggle (最小化/恢复)
+                    // 如果在后台，意图是 Activate (提升至最前)
+                    let isAlreadyActive = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == clickedBundleId
+                    let action = isAlreadyActive ? "toggle" : "activate"
+                    
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("DockIconClicked"),
+                        object: nil,
+                        userInfo: ["bundleId": clickedBundleId, "action": action]
+                    )
+                    
+                    DispatchQueue.main.async {
+                        if action == "toggle" {
+                            WindowManager.shared.toggleWindows(for: targetApp)
+                        } else {
+                            WindowManager.shared.ensureWindowsVisible(for: targetApp)
+                        }
+                    }
+                    resultEvent = nil
+                } else {
+                    // 2. 该应用未运行...
                 }
             }
             semaphore.signal()

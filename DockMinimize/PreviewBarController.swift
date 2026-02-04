@@ -14,6 +14,12 @@ class PreviewBarController: NSObject {
     
     private let log = DebugLogger.shared
     private var cancellables = Set<AnyCancellable>()
+
+    private enum DockOrientation: String {
+        case bottom
+        case left
+        case right
+    }
     
     /// 悬停事件监听器
     private let hoverMonitor = HoverEventMonitor()
@@ -68,17 +74,114 @@ class PreviewBarController: NSObject {
                 return
             }
             
-            // B. 如果点击在 Dock 区域内，不隐藏
-            // 对于底部 Dock，简单判定为屏幕底部 100px。
-            // 这样点击图标展开/收回时，预览条会保持稳定。
+            // B. 如果点击在 Dock 图标上，不隐藏
+            // 旧逻辑仅按“屏幕底部 100px”判断 Dock，Dock 在左/右侧时会误判导致预览条立刻消失。
             let screenHeight = NSScreen.main?.frame.height ?? 800
-            if mouseLocation.y < 100 {
+            let cgMousePos = CGPoint(x: mouseLocation.x, y: screenHeight - mouseLocation.y)
+            if DockIconCacheManager.shared.getBundleId(at: cgMousePos) != nil {
                 return
             }
             
             // C. 只有点击桌面、其他窗口等真正“离开”的操作，才立刻强制关闭
             self.stateManager.hidePreview()
         }
+    }
+
+    private func currentDockOrientation() -> DockOrientation? {
+        let dockDefaults = UserDefaults(suiteName: "com.apple.dock")
+        if let value = dockDefaults?.string(forKey: "orientation")?.lowercased() {
+            return DockOrientation(rawValue: value)
+        }
+        return nil
+    }
+
+    private func dockThickness(on screen: NSScreen, orientation: DockOrientation) -> CGFloat {
+        let screenFrame = screen.frame
+        let visibleFrame = screen.visibleFrame
+
+        let inferred: CGFloat
+        switch orientation {
+        case .bottom:
+            inferred = visibleFrame.minY - screenFrame.minY
+        case .left:
+            inferred = visibleFrame.minX - screenFrame.minX
+        case .right:
+            inferred = screenFrame.maxX - visibleFrame.maxX
+        }
+
+        if inferred > 1 {
+            return inferred
+        }
+
+        // Dock is likely auto-hidden; estimate thickness from icon cache (best effort).
+        if let first = DockIconCacheManager.shared.cachedIcons.first {
+            var union = first.frame
+            for icon in DockIconCacheManager.shared.cachedIcons.dropFirst() {
+                union = union.union(icon.frame)
+            }
+
+            switch orientation {
+            case .bottom:
+                return union.height + 16
+            case .left, .right:
+                return union.width + 16
+            }
+        }
+
+        // Fallback to tilesize.
+        let tileSize = CGFloat(UserDefaults(suiteName: "com.apple.dock")?.double(forKey: "tilesize") ?? 48)
+        switch orientation {
+        case .bottom:
+            return tileSize + 24
+        case .left, .right:
+            return tileSize + 16
+        }
+    }
+
+    private func adjustedFrameToLeaveSpaceForDock(_ frame: CGRect, on screen: NSScreen) -> CGRect {
+        guard let orientation = currentDockOrientation() else { return frame }
+
+        let dockGap: CGFloat = 12
+        let edgeMargin: CGFloat = 8
+
+        let screenFrame = screen.frame
+        let reserved = dockThickness(on: screen, orientation: orientation) + dockGap
+
+        // Start from visibleFrame (already avoids the Dock + menu bar when Dock is not auto-hidden),
+        // then reserve additional space on the Dock side (also covers auto-hidden Dock via fallback thickness).
+        var safe = screen.visibleFrame.insetBy(dx: edgeMargin, dy: edgeMargin)
+        let safeMaxX = safe.maxX
+        let safeMaxY = safe.maxY
+
+        switch orientation {
+        case .right:
+            let newMaxX = min(safeMaxX, screenFrame.maxX - reserved)
+            safe.size.width = max(0, newMaxX - safe.minX)
+        case .left:
+            let newMinX = max(safe.minX, screenFrame.minX + reserved)
+            safe.origin.x = newMinX
+            safe.size.width = max(0, safeMaxX - newMinX)
+        case .bottom:
+            let newMinY = max(safe.minY, screenFrame.minY + reserved)
+            safe.origin.y = newMinY
+            safe.size.height = max(0, safeMaxY - newMinY)
+        }
+
+        // If the preview is too large to fit without covering the Dock, shrink (clip/scale) it.
+        // This handles huge overlay-style windows that nearly span the whole display.
+        var adjusted = frame
+        if safe.width > 1, adjusted.width > safe.width { adjusted.size.width = safe.width }
+        if safe.height > 1, adjusted.height > safe.height { adjusted.size.height = safe.height }
+
+        // Clamp origin to safe area.
+        if safe.width > 1 {
+            adjusted.origin.x = min(max(adjusted.origin.x, safe.minX), safe.maxX - adjusted.width)
+        }
+        if safe.height > 1 {
+            adjusted.origin.y = min(max(adjusted.origin.y, safe.minY), safe.maxY - adjusted.height)
+        }
+
+        return adjusted
     }
     
     /// 启动预览功能
@@ -303,6 +406,8 @@ class PreviewBarController: NSObject {
             return NSPoint(x: 100, y: 100)
         }
         
+        let screenFrame = screen.frame
+
         // 将 CGEvent 坐标（左上角原点）转换为 AppKit 坐标（左下角原点）
         let screenHeight = screen.frame.height
         let appKitY = screenHeight - iconPosition.y
@@ -311,9 +416,38 @@ class PreviewBarController: NSObject {
         let x = iconPosition.x - windowSize.width / 2
         let y = appKitY - 10 // 紧贴 Dock 上方，只留 -10 像素缝隙（向下调整）
         
-        // 确保不超出屏幕边界
-        let clampedX = max(10, min(x, screen.frame.width - windowSize.width - 10))
-        let clampedY = max(80, min(y, screen.frame.height - windowSize.height - 10)) // 至少在 Dock 上方
+        // 确保不覆盖 Dock：用 visibleFrame 作为安全区，并在 Dock 方向额外留一点像素缝隙。
+        let edgeMargin: CGFloat = 10
+        let dockGap: CGFloat = 12
+
+        var safe = screen.visibleFrame.insetBy(dx: edgeMargin, dy: edgeMargin)
+        let safeMaxX = safe.maxX
+        let safeMaxY = safe.maxY
+
+        if let orientation = currentDockOrientation() {
+            let reserved = dockThickness(on: screen, orientation: orientation) + dockGap
+            switch orientation {
+            case .right:
+                let newMaxX = min(safeMaxX, screenFrame.maxX - reserved)
+                safe.size.width = max(0, newMaxX - safe.minX)
+            case .left:
+                let newMinX = max(safe.minX, screenFrame.minX + reserved)
+                safe.origin.x = newMinX
+                safe.size.width = max(0, safeMaxX - newMinX)
+            case .bottom:
+                let newMinY = max(safe.minY, screenFrame.minY + reserved)
+                safe.origin.y = newMinY
+                safe.size.height = max(0, safeMaxY - newMinY)
+            }
+        }
+
+        let minX = safe.minX
+        let maxX = max(safe.minX, safe.maxX - windowSize.width)
+        let minY = max(80, safe.minY) // 至少在 Dock 上方（保留原逻辑的最小高度）
+        let maxY = max(minY, safe.maxY - windowSize.height)
+
+        let clampedX = min(max(x, minX), maxX)
+        let clampedY = min(max(y, minY), maxY)
         
         return NSPoint(x: clampedX, y: clampedY)
     }
@@ -612,6 +746,13 @@ extension PreviewBarController: PreviewStateManagerDelegate {
             log.log("⚠️ No image captured for window \(windowId)")
             return 
         }
+
+        // Keep a copy for alignment decisions (cropped/out-of-bounds cases).
+        let originalTargetFrame = targetFrame
+
+        // Nudge away from Dock so the preview doesn't visually cover the Dock bar.
+        // Especially important for huge overlay-style windows that can span edge-to-edge.
+        targetFrame = adjustedFrameToLeaveSpaceForDock(targetFrame, on: screen)
         
         // 复用或创建窗口
         let window: NSWindow
@@ -640,10 +781,10 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         // SwiftUI 的容器在处理出界 Frame 时会有难以预料的居中行为，底层 NSImageView 更可控。
         let imageView = NSImageView(frame: NSRect(origin: .zero, size: targetFrame.size))
         imageView.image = displayImage
-        imageView.imageScaling = .scaleNone // 禁止任何缩放，保持 1:1
+        imageView.imageScaling = (targetFrame.size == originalTargetFrame.size) ? .scaleNone : .scaleProportionallyDown
         
         // 计算对齐方式
-        if targetFrame.origin.x < 0 {
+        if originalTargetFrame.origin.x < 0 {
             // 窗口左侧出界：截图只有右半部 -> 内容右对齐
             imageView.imageAlignment = .alignTopRight
             log.log("📐 Alignment: .alignTopRight (Window left out)")
