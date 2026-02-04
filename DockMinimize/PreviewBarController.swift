@@ -406,6 +406,8 @@ class PreviewBarController: NSObject {
             return NSPoint(x: 100, y: 100)
         }
         
+        let screenFrame = screen.frame
+
         // 将 CGEvent 坐标（左上角原点）转换为 AppKit 坐标（左下角原点）
         let screenHeight = screen.frame.height
         let appKitY = screenHeight - iconPosition.y
@@ -414,9 +416,38 @@ class PreviewBarController: NSObject {
         let x = iconPosition.x - windowSize.width / 2
         let y = appKitY - 10 // 紧贴 Dock 上方，只留 -10 像素缝隙（向下调整）
         
-        // 确保不超出屏幕边界
-        let clampedX = max(10, min(x, screen.frame.width - windowSize.width - 10))
-        let clampedY = max(80, min(y, screen.frame.height - windowSize.height - 10)) // 至少在 Dock 上方
+        // 确保不覆盖 Dock：用 visibleFrame 作为安全区，并在 Dock 方向额外留一点像素缝隙。
+        let edgeMargin: CGFloat = 10
+        let dockGap: CGFloat = 12
+
+        var safe = screen.visibleFrame.insetBy(dx: edgeMargin, dy: edgeMargin)
+        let safeMaxX = safe.maxX
+        let safeMaxY = safe.maxY
+
+        if let orientation = currentDockOrientation() {
+            let reserved = dockThickness(on: screen, orientation: orientation) + dockGap
+            switch orientation {
+            case .right:
+                let newMaxX = min(safeMaxX, screenFrame.maxX - reserved)
+                safe.size.width = max(0, newMaxX - safe.minX)
+            case .left:
+                let newMinX = max(safe.minX, screenFrame.minX + reserved)
+                safe.origin.x = newMinX
+                safe.size.width = max(0, safeMaxX - newMinX)
+            case .bottom:
+                let newMinY = max(safe.minY, screenFrame.minY + reserved)
+                safe.origin.y = newMinY
+                safe.size.height = max(0, safeMaxY - newMinY)
+            }
+        }
+
+        let minX = safe.minX
+        let maxX = max(safe.minX, safe.maxX - windowSize.width)
+        let minY = max(80, safe.minY) // 至少在 Dock 上方（保留原逻辑的最小高度）
+        let maxY = max(minY, safe.maxY - windowSize.height)
+
+        let clampedX = min(max(x, minX), maxX)
+        let clampedY = min(max(y, minY), maxY)
         
         return NSPoint(x: clampedX, y: clampedY)
     }
