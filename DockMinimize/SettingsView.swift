@@ -436,6 +436,8 @@ private var smallWindowPreviewContent: some View {
                         desc: t("在窗口原本消失的位置显示大图预览。", "Show large preview at original window location."),
                         isOn: $settingsManager.enableOriginalPreview
                     )
+                    .disabled(!settingsManager.enableIndependentWindowControl)
+                    .opacity(settingsManager.enableIndependentWindowControl ? 1.0 : 0.5)
                 }
                 .padding(.vertical, 4)
             }
