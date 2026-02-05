@@ -143,7 +143,7 @@ class DockEventMonitor {
             options: .defaultTap,
             eventsOfInterest: CGEventMask(eventMask),
             callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
-                guard let refcon = refcon else { return Unmanaged.passRetained(event) }
+                guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
                 let monitor = Unmanaged<DockEventMonitor>.fromOpaque(refcon).takeUnretainedValue()
                 return monitor.handleEvent(proxy: proxy, type: type, event: event)
             },
@@ -202,22 +202,22 @@ class DockEventMonitor {
                     NotificationCenter.default.post(name: NSNotification.Name("HidePreviewBarForcefully"), object: nil)
                 }
             }
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
         
-        guard type == .leftMouseDown else { return Unmanaged.passRetained(event) }
+        guard type == .leftMouseDown else { return Unmanaged.passUnretained(event) }
         
-        if !inDock { return Unmanaged.passRetained(event) }
+        if !inDock { return Unmanaged.passUnretained(event) }
         
         // 防抖：缩短至 0.1s，适应快速连击
-        if Date().timeIntervalSince(lastProcessedTime) < 0.1 { return Unmanaged.passRetained(event) }
+        if Date().timeIntervalSince(lastProcessedTime) < 0.1 { return Unmanaged.passUnretained(event) }
         
         // 4. --- 终极防御：给所有的业务逻辑加一个“超时保险箱” ---
         // 我们在后台线程执行业务代码，如果 10ms 内没跑完（说明系统 AX 或 Workspace 锁住了），
         // 那么主线程立即直接放通事件，不等待，不卡死系统。
         
         let semaphore = DispatchSemaphore(value: 0)
-        var resultEvent: Unmanaged<CGEvent>? = Unmanaged.passRetained(event)
+        var resultEvent: Unmanaged<CGEvent>? = Unmanaged.passUnretained(event)
         
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             guard let self = self else { 
@@ -303,7 +303,7 @@ class DockEventMonitor {
         let waitResult = semaphore.wait(timeout: .now() + 0.01)
         if waitResult == .timedOut {
             // 系统响应太慢（说明正在处理权限或忙碌），为了保命，这里直接放行所有点击事件。
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
         
         return resultEvent

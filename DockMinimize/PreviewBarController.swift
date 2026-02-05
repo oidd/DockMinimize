@@ -324,14 +324,18 @@ class PreviewBarController: NSObject {
         switch dockPos {
         case .bottom:
             x = iconPosition.x - windowSize.width / 2
-            y = appKitY - 10 // 居于图标上方
+            // ⭐️ 紧贴模式：底部 Dock 需要完全盖住系统标签 (带箭头胶囊)，所以偏移设为 0
+            y = DockPositionManager.shared.realDockThickness
             
         case .left:
-            x = 90 // 增加避让间距，防止与图标检测区 (100) 严重重叠
+            // ⭐️ 呼吸模式：侧边 Dock 用户反馈 10px 间距良好
+            x = DockPositionManager.shared.realDockThickness + 10
             y = appKitY - windowSize.height / 2 // 与图标垂直居中对齐
             
         case .right:
-            x = screenWidth - 90 - windowSize.width // 增加避让间距
+            // ⭐️ 呼吸模式：右侧同理
+            let thickness = DockPositionManager.shared.realDockThickness
+            x = screenWidth - thickness - 10 - windowSize.width
             y = appKitY - windowSize.height / 2 // 与图标垂直居中对齐
         }
         

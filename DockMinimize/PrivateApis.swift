@@ -169,4 +169,20 @@ class DockPositionManager {
     var dockDetectionThickness: CGFloat {
         return 100
     }
+    
+    /// 获取 Dock 的真实像素厚度（视觉边缘）
+    var realDockThickness: CGFloat {
+        guard let screen = NSScreen.main else { return 60 }
+        let frame = screen.frame
+        let visibleFrame = screen.visibleFrame
+        
+        switch currentPosition {
+        case .bottom:
+            return visibleFrame.origin.y - frame.origin.y
+        case .left:
+            return visibleFrame.origin.x - frame.origin.x
+        case .right:
+            return frame.width - (visibleFrame.origin.x - frame.origin.x + visibleFrame.width)
+        }
+    }
 }
