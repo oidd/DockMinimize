@@ -358,8 +358,8 @@ class PreviewBarViewModel: ObservableObject {
             }
             
             // 稍后刷新以补获最终稳定的缩略图
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                self.refreshThumbnails(forceRefresh: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.refreshThumbnails(forceRefresh: true)
             }
         }
     }
@@ -368,16 +368,22 @@ class PreviewBarViewModel: ObservableObject {
         currentBundleId = bundleId
         currentApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first
         
+        // ⭐️ 同步加载元数据，确保 Controller 逻辑能立即看到窗口数量
         let newWindows = thumbnailService.getWindows(for: bundleId)
         
-        // ⭐️ 修正：不仅检查数量和 ID，还要检查最小化状态是否发生变化
-        // 这样当窗口在后台被状态改变时（比如系统自动展开某窗口），UI 能同步刷新
-        let hasCountOrIdChange = newWindows.count != windows.count || newWindows.map({$0.windowId}) != windows.map({$0.windowId})
+        // ⭐️ 状态比对逻辑
+        let hasCountOrIdChange = newWindows.count != windows.count || 
+                                 newWindows.map({$0.windowId}) != windows.map({$0.windowId})
         let hasStateChange = zip(newWindows, windows).contains { $0.0.isMinimized != $0.1.isMinimized }
         
         if hasCountOrIdChange || hasStateChange {
             windows = newWindows
+            // 刷新缩略图 (内部已是异步或轻量检查)
             refreshThumbnails(forceRefresh: true)
+            
+            // ⭐️ 通知数量变化，触发外部布局刷新
+            lastWindowCount = newWindows.count
+            updateScrollIndicators()
         }
     }
     

@@ -126,3 +126,47 @@ func makeKeyWindow(_ psn: inout ProcessSerialNumber, windowID: CGWindowID) {
     _ = SLPSPostEventRecordTo(&psn, &bytes)
 }
 
+
+// MARK: - Dock Position Detection
+
+enum DockPosition {
+    case bottom
+    case left
+    case right
+}
+
+class DockPositionManager {
+    static let shared = DockPositionManager()
+    
+    private init() {}
+    
+    /// 获取当前主显示器上的 Dock 位置
+    var currentPosition: DockPosition {
+        guard let screen = NSScreen.main else { return .bottom }
+        
+        let frame = screen.frame
+        let visibleFrame = screen.visibleFrame
+        
+        // 1. 判断底部：visibleFrame.origin.y > 0
+        if visibleFrame.origin.y > frame.origin.y {
+            return .bottom
+        }
+        
+        // 2. 判断左侧：visibleFrame.origin.x > 0
+        if visibleFrame.origin.x > frame.origin.x {
+            return .left
+        }
+        
+        // 3. 判断右侧：visibleFrame.size.width < frame.size.width
+        if visibleFrame.size.width < frame.size.width {
+            return .right
+        }
+        
+        return .bottom
+    }
+    
+    /// 获取 Dock 的厚度（通常为 100px 左右的检测范围）
+    var dockDetectionThickness: CGFloat {
+        return 100
+    }
+}

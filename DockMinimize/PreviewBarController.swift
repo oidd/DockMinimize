@@ -69,10 +69,19 @@ class PreviewBarController: NSObject {
             }
             
             // B. 如果点击在 Dock 区域内，不隐藏
-            // 对于底部 Dock，简单判定为屏幕底部 100px。
-            // 这样点击图标展开/收回时，预览条会保持稳定。
-            let screenHeight = NSScreen.main?.frame.height ?? 800
-            if mouseLocation.y < 100 {
+            let dockPos = DockPositionManager.shared.currentPosition
+            let thickness = DockPositionManager.shared.dockDetectionThickness
+            
+            let clickedInDock: Bool = {
+                switch dockPos {
+                case .bottom: return mouseLocation.y < thickness
+                case .left:   return mouseLocation.x < thickness
+                case .right:  let screenW = NSScreen.main?.frame.width ?? 1200
+                               return mouseLocation.x > (screenW - thickness)
+                }
+            }()
+            
+            if clickedInDock {
                 return
             }
             
@@ -137,9 +146,6 @@ class PreviewBarController: NSObject {
         // ⭐️ 高级优化：复用机制，彻底解决快速移动鼠标导致的 SwiftUI 崩溃
         if let existingVM = viewModel, existingVM.currentBundleId == bundleId {
             log.log("📺 Reusing existing VM for \(bundleId)")
-            existingVM.loadWindows(for: bundleId)
-            
-            // 依然需要加载窗口
             existingVM.loadWindows(for: bundleId)
         } else {
             log.log("📺 Creating new VM for \(bundleId)")
@@ -249,12 +255,16 @@ class PreviewBarController: NSObject {
     
     /// 更新监听区域
     private func updateHoverMonitorFrame(windowFrame frame: CGRect) {
-        let expandedHeight = frame.height + 50 // 向下扩展 50px 覆盖到 Dock
+        let screenHeight = NSScreen.main?.frame.height ?? 1080
+        
+        // ⭐️ 极致修复：预览条判定区域严格等于窗口物理区域
+        // 不再向 Dock 图标区进行物理扩张，防止在侧边 Dock 上滑动时产生“检测短路”
+        // 窗口与图标间的“空隙保护”完全交由 HoverEventMonitor 的安全走廊 (Safe Corridor) 处理
         hoverMonitor.previewBarFrame = CGRect(
-            x: frame.origin.x - 20, // 左右各扩展 20px
-            y: (NSScreen.main?.frame.height ?? 1080) - frame.origin.y - expandedHeight,
-            width: frame.width + 40,
-            height: expandedHeight
+            x: frame.origin.x,
+            y: screenHeight - frame.origin.y - frame.height,
+            width: frame.width,
+            height: frame.height
         )
     }
     
@@ -303,17 +313,31 @@ class PreviewBarController: NSObject {
             return NSPoint(x: 100, y: 100)
         }
         
-        // 将 CGEvent 坐标（左上角原点）转换为 AppKit 坐标（左下角原点）
+        let dockPos = DockPositionManager.shared.currentPosition
         let screenHeight = screen.frame.height
+        let screenWidth = screen.frame.width
         let appKitY = screenHeight - iconPosition.y
         
-        // 预览条应该紧贴 Dock（Dock 高度约 70px，减去一点让预览条更靠近）
-        let x = iconPosition.x - windowSize.width / 2
-        let y = appKitY - 10 // 紧贴 Dock 上方，只留 -10 像素缝隙（向下调整）
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        
+        switch dockPos {
+        case .bottom:
+            x = iconPosition.x - windowSize.width / 2
+            y = appKitY - 10 // 居于图标上方
+            
+        case .left:
+            x = 90 // 增加避让间距，防止与图标检测区 (100) 严重重叠
+            y = appKitY - windowSize.height / 2 // 与图标垂直居中对齐
+            
+        case .right:
+            x = screenWidth - 90 - windowSize.width // 增加避让间距
+            y = appKitY - windowSize.height / 2 // 与图标垂直居中对齐
+        }
         
         // 确保不超出屏幕边界
-        let clampedX = max(10, min(x, screen.frame.width - windowSize.width - 10))
-        let clampedY = max(80, min(y, screen.frame.height - windowSize.height - 10)) // 至少在 Dock 上方
+        let clampedX = max(10, min(x, screenWidth - windowSize.width - 10))
+        let clampedY = max(80, min(y, screenHeight - windowSize.height - 10))
         
         return NSPoint(x: clampedX, y: clampedY)
     }

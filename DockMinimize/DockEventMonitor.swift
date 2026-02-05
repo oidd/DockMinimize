@@ -181,11 +181,23 @@ class DockEventMonitor {
         // 解决方案：不在此处检查权限，只检查内存中的缓存
         
         // 2. 右键/中键点击立刻关闭预览 (Dock 的右键菜单优先级最高)
+        let location = event.location
+        let screen = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+        let dockPos = DockPositionManager.shared.currentPosition
+        let thickness = DockPositionManager.shared.dockDetectionThickness
+        
+        // 2. 判断是否在 Dock 区域内 (支持左/右/底)
+        let inDock: Bool = {
+            switch dockPos {
+            case .bottom: return location.y > (screen.height - thickness)
+            case .left:   return location.x < thickness
+            case .right:  return location.x > (screen.width - thickness)
+            }
+        }()
+        
+        // 3. 右键/中键点击立刻关闭预览
         if type == .rightMouseDown || type == .otherMouseDown {
-            let location = event.location
-            let screenHeight = NSScreen.main?.frame.height ?? 800
-            if location.y >= (screenHeight - 100) {
-                // 如果在 Dock 区域右键，通知预览条消失，且不拦截事件
+            if inDock {
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(name: NSNotification.Name("HidePreviewBarForcefully"), object: nil)
                 }
@@ -195,11 +207,7 @@ class DockEventMonitor {
         
         guard type == .leftMouseDown else { return Unmanaged.passRetained(event) }
         
-        let location = event.location
-        
-        // 3. 检查是否在 Dock 区域 (仅使用内存中的 screen 尺寸)
-        let screenHeight = NSScreen.main?.frame.height ?? 800
-        if location.y < (screenHeight - 100) { return Unmanaged.passRetained(event) }
+        if !inDock { return Unmanaged.passRetained(event) }
         
         // 防抖：缩短至 0.1s，适应快速连击
         if Date().timeIntervalSince(lastProcessedTime) < 0.1 { return Unmanaged.passRetained(event) }

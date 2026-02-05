@@ -211,9 +211,10 @@ class WindowThumbnailService {
             var subroleRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(window, kAXSubroleAttribute as CFString, &subroleRef) == .success,
                let subrole = subroleRef as? String {
-                // 只接受标准窗口和对话框
+                // 只接受标准窗口、对话框和浮动窗口
                 if subrole != kAXStandardWindowSubrole as String && 
-                   subrole != kAXDialogSubrole as String {
+                   subrole != kAXDialogSubrole as String &&
+                   subrole != kAXFloatingWindowSubrole as String {
                     continue
                 }
             }
@@ -224,8 +225,11 @@ class WindowThumbnailService {
             let hasCloseButton = AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &closeButtonRef) == .success && closeButtonRef != nil
             let hasMinimizeButton = AXUIElementCopyAttributeValue(window, kAXMinimizeButtonAttribute as CFString, &minimizeButtonRef) == .success && minimizeButtonRef != nil
             
-            // 必须有关闭按钮或最小化按钮才是有效窗口
-            if !hasCloseButton && !hasMinimizeButton {
+            // 必须有关闭按钮、最小化按钮或者是具有标题的窗口
+            var titleRef: CFTypeRef?
+            let hasTitle = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success && !(titleRef as? String ?? "").isEmpty
+            
+            if !hasCloseButton && !hasMinimizeButton && !hasTitle {
                 continue
             }
             
@@ -269,12 +273,24 @@ class WindowThumbnailService {
     
     /// 将 CG 窗口与 AX 窗口匹配（通过 _AXUIElementGetWindow 获取的精确 ID）
     private func matchAXWindow(windowId: CGWindowID, bounds: CGRect, in axWindows: [AXWindowInfo]) -> AXWindowInfo? {
-        // 直接通过 windowId 匹配
+        // 1. 优先通过 windowId 匹配
         for axWindow in axWindows {
             if axWindow.windowId == windowId {
                 return axWindow
             }
         }
+        
+        // 2. 备选方案：通过位置和尺寸模糊匹配 (容错处理)
+        for axWindow in axWindows {
+            let threshold: CGFloat = 2.0
+            if abs(axWindow.position.x - bounds.origin.x) < threshold &&
+               abs(axWindow.position.y - bounds.origin.y) < threshold &&
+               abs(axWindow.size.width - bounds.width) < threshold &&
+               abs(axWindow.size.height - bounds.height) < threshold {
+                return axWindow
+            }
+        }
+        
         return nil
     }
     
