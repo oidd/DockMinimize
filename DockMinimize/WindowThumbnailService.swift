@@ -320,8 +320,24 @@ class WindowThumbnailService {
         let thumbnail = createThumbnail(from: image, maxWidth: 320, maxHeight: 200)
         
         // 4. 更新内存与磁盘缓存
+        // 4. 更新内存与磁盘缓存
         thumbnailCache[windowId] = CachedThumbnail(image: thumbnail, captureTime: Date())
         CacheManager.shared.saveThumbnail(image: thumbnail, windowId: windowId)
+        
+        // 5. 内存保护：LRU 淘汰 (防止无限增长)
+        // 如果缓存超过 50 张，清理最旧的 20 张
+        if thumbnailCache.count > 50 {
+            let sortedKeys = thumbnailCache.keys.sorted {
+                (thumbnailCache[$0]?.captureTime ?? Date.distantPast) < (thumbnailCache[$1]?.captureTime ?? Date.distantPast)
+            }
+            // 删除前 20 个（最旧的）
+            for i in 0..<20 {
+                if i < sortedKeys.count {
+                    thumbnailCache.removeValue(forKey: sortedKeys[i])
+                }
+            }
+            log.log("🧹 Pruned thumbnail cache (size: \(thumbnailCache.count))")
+        }
         
         return thumbnail
     }

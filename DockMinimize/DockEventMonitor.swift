@@ -30,7 +30,9 @@ class DockIconCacheManager {
         // 降低频率，降低系统压力
         queue.async { [weak self] in
             while true {
-                self?.updateCache()
+                autoreleasepool {
+                    self?.updateCache()
+                }
                 Thread.sleep(forTimeInterval: 3.0) 
             }
         }
