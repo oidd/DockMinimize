@@ -24,8 +24,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             startHoverPreview()
         }
         
-        // 首次启动时自动弹出设置面板，让用户确认软件已运行
-        menuBarController?.showSettingsWindow()
+        // 仅在首次启动时自动弹出设置面板
+        let hasLaunchedBefore = UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
+        if !hasLaunchedBefore {
+            menuBarController?.showSettingsWindow()
+            UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
+        }
         
         // 监听权限变化
         NotificationCenter.default.addObserver(
