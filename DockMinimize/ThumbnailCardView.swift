@@ -108,9 +108,25 @@ struct ThumbnailCardView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 10)
         .contentShape(Rectangle())
-        .onTapGesture {
-            onClick()
-        }
+        // ⭐️ 核心修复：使用 DragGesture(minimumDistance: 0) 替代 onTapGesture
+        // 这样即使鼠标在点击过程中发生了移动（在 bounds 范围内），也能正确识别为点击
+        // 解决了“移动中点击失效”的问题
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onEnded { value in
+                    // 简单的判定：如果释放点还在视图范围内（允许少量溢出容差），就认为是点击
+                    // 这里的 value.location 是相对于视图左上角的
+                    // 缩略图宽度约 176 (160+16padding)，高度约 150
+                    // 我们给一个宽松的判定区域
+                    let x = value.location.x
+                    let y = value.location.y
+                    
+                    // 容差 20px
+                    if x > -20 && x < 200 && y > -20 && y < 180 {
+                        onClick()
+                    }
+                }
+        )
         .onHover { hovering in
             onHover(hovering)
         }
