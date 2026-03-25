@@ -17,14 +17,17 @@ DockMinimize features smart logic for applications with multiple windows. A sing
 ### Application Blacklist
 You can add specific applications to a blacklist. DockMinimize will completely bypass blacklisted apps, leaving their original interaction logic untouched.
 
+### SideBar Integration
+DockMinimize can work together with SideBar. When SideBar is currently managing an app window, DockMinimize will automatically skip that app to avoid conflicts in window folding, restoring, and thumbnail capture. The synced apps are also shown in DockMinimize's blacklist settings as SideBar-managed entries.
+
 ### Pure & Performant
 - Built with native Swift and SwiftUI for a lightweight and efficient experience.
-- Supports Universal Binary (compatible with both Apple Silicon and Intel chips).
+- Single universal build: one DMG supports both Apple Silicon and Intel Macs, with no separate chip-specific version.
 - UI design follows native macOS aesthetics, blending seamlessly into the system.
 
 ## Installation
 
-1. Download the latest DMG installer from the GitHub Releases page.
+1. Download the latest universal DMG installer from the GitHub Releases page.
 2. Drag DockMinimize to your Applications folder.
 3. Upon first launch, please follow the prompts to grant the following permissions:
     - **Accessibility**: Used to monitor Dock click events and control windows.
@@ -60,14 +63,17 @@ DockMinimize 是一款为 macOS 打造的增强工具，它弥补了 macOS 在 D
 ### 应用黑名单
 您可以根据需要将特定的应用程序加入黑名单。对于黑名单中的应用，DockMinimize 将完全避让，不干预其原有的交互逻辑。
 
+### SideBar 联动
+DockMinimize 现在可以与 SideBar 协同工作。当某个应用正在由 SideBar 管理时，DockMinimize 会自动跳过该应用，避免在窗口折叠、恢复和缩略图捕获上发生冲突。这些由 SideBar 接管的应用，也会在 DockMinimize 的黑名单设置中以联动条目的形式实时展示。
+
 ### 纯净与性能
 - 采用原生 Swift 和 SwiftUI 开发，轻量且高效。
-- 支持 Universal Binary（兼容 Apple Silicon 和 Intel 芯片）。
+- 现在仅提供单一通用版安装包：一个 DMG 同时支持 Apple Silicon 和 Intel Mac，不再区分单独的芯片版本。
 - 界面设计遵循 macOS 原生质感，完美融入系统美学。
 
 ## 安装指南
 
-1. 在 GitHub 的 Releases 页面下载最新的 DMG 安装包。
+1. 在 GitHub 的 Releases 页面下载最新的通用版 DMG 安装包。
 2. 将 DockMinimize 拖动至应用程序文件夹。
 3. 首次启动时，请按照指引授予以下权限：
     - **辅助功能权限**：用于监听 Dock 点击事件并控制窗口。
