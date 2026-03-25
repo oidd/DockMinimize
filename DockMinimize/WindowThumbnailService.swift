@@ -69,8 +69,8 @@ class WindowThumbnailService {
             return []
         }
         
-        // 检查黑名单：如果是黑名单应用，直接返回空，彻底不碰
-        if SettingsManager.shared.blacklistedBundleIDs.contains(bundleId) {
+        // 检查黑名单 + SideBar 联动排除：如果命中，直接返回空，彻底不碰
+        if SettingsManager.shared.shouldSkipApp(bundleID: bundleId) {
             return []
         }
         
@@ -382,7 +382,7 @@ class WindowThumbnailService {
     
     // MARK: - Private Methods
     
-    /// 创建缩略图
+    /// 创建缩略图（线程安全版本，不使用 lockFocus/unlockFocus）
     private func createThumbnail(from image: NSImage, maxWidth: CGFloat, maxHeight: CGFloat) -> NSImage {
         let originalSize = image.size
         
@@ -396,10 +396,29 @@ class WindowThumbnailService {
             height: originalSize.height * ratio
         )
         
-        let thumbnail = NSImage(size: newSize)
-        thumbnail.lockFocus()
+        // ⭐️ 使用 NSBitmapImageRep + NSGraphicsContext 替代 lockFocus
+        // lockFocus/unlockFocus 必须在主线程调用，而此方法可能在后台线程被调用
+        guard let bitmapRep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(newSize.width),
+            pixelsHigh: Int(newSize.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            // 回退：返回原图
+            return image
+        }
         
+        bitmapRep.size = newSize
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmapRep)
         NSGraphicsContext.current?.imageInterpolation = .high
+        
         image.draw(
             in: NSRect(origin: .zero, size: newSize),
             from: NSRect(origin: .zero, size: originalSize),
@@ -407,7 +426,10 @@ class WindowThumbnailService {
             fraction: 1.0
         )
         
-        thumbnail.unlockFocus()
+        NSGraphicsContext.restoreGraphicsState()
+        
+        let thumbnail = NSImage(size: newSize)
+        thumbnail.addRepresentation(bitmapRep)
         
         return thumbnail
     }

@@ -16,6 +16,29 @@ protocol HoverEventMonitorDelegate: AnyObject {
 }
 
 class HoverEventMonitor {
+    private struct SafeTransitionZone {
+        let p1: CGPoint
+        let p2: CGPoint
+        let p3: CGPoint
+        let p4: CGPoint
+
+        func contains(_ point: CGPoint) -> Bool {
+            let edges = [(p1, p2), (p2, p3), (p3, p4), (p4, p1)]
+            var hasPositive = false
+            var hasNegative = false
+            
+            for (start, end) in edges {
+                let cross = (end.x - start.x) * (point.y - start.y) - (end.y - start.y) * (point.x - start.x)
+                if cross > 0.0001 { hasPositive = true }
+                if cross < -0.0001 { hasNegative = true }
+                if hasPositive && hasNegative {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+    
     weak var delegate: HoverEventMonitorDelegate?
     
     private var eventTap: CFMachPort?
@@ -61,6 +84,12 @@ class HoverEventMonitor {
         runLoopSource = nil
     }
     
+    /// 检查 EventTap 是否还活着
+    func isAlive() -> Bool {
+        guard let tap = eventTap else { return false }
+        return CGEvent.tapIsEnabled(tap: tap)
+    }
+    
     /// 最后一次触发悬停的时间（用于防抖）
     private var lastHoverTriggerTime: Date = Date.distantPast
 
@@ -69,7 +98,12 @@ class HoverEventMonitor {
         lastMousePosition = location
         
         if event.type == .tapDisabledByTimeout || event.type == .tapDisabledByUserInput {
-            exit(0)
+            // ⚠️ 严禁 exit(0)！EventTap 超时是常见事件（截图阻塞等），重新启用即可恢复
+            log.log("⚠️ [HoverMonitor] EventTap disabled by \(event.type == .tapDisabledByTimeout ? "timeout" : "user input"), re-enabling...")
+            if let tap = self.eventTap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+            return
         }
         
         if WindowManager.shared.isTransitioning {
@@ -100,7 +134,7 @@ class HoverEventMonitor {
                 
                 let currentBundleId = inDock ? DockIconCacheManager.shared.getBundleId(at: location) : nil
                 
-                // 2. 预览条交互与安全走廊保护
+                // 2. 预览条交互与动态安全区域保护
                 if self.isPreviewBarVisible && !self.previewBarFrame.isEmpty {
                     // A. 如果鼠标在预览条内，维持现状
                     if self.previewBarFrame.contains(location) {
@@ -109,33 +143,15 @@ class HoverEventMonitor {
                         return
                     }
                     
-                    // B. ⭐️ 核心锁定消除：如果鼠标已经明确移到了另一个图标上，强制打破锁定
-                    if let currentId = currentBundleId, currentId != self.lastHoveredApp {
-                        self.log.log("🔓 Lock broken: hovering on new app \(currentId)")
-                        // 继续向下执行，不 return
-                    } else if let iconPos = self.getDockIconPosition(for: self.lastHoveredApp ?? "") {
-                        // C. 常规安全走廊锁定逻辑
-                        let lockMargin: CGFloat = 40
-                        
-                        switch dockPos {
-                        case .bottom:
-                            let isWithinCorridor = location.x > (iconPos.x - lockMargin) && location.x < (iconPos.x + lockMargin)
-                            if isWithinCorridor && location.y < (screen.height - 40) && location.y > (screen.height - 200) {
-                                semaphore.signal()
-                                return
-                            }
-                        case .left:
-                            let isWithinCorridor = location.y > (iconPos.y - lockMargin) && location.y < (iconPos.y + lockMargin)
-                            if isWithinCorridor && location.x >= thickness - 10 && location.x < 220 {
-                                semaphore.signal()
-                                return
-                            }
-                        case .right:
-                            let isWithinCorridor = location.y > (iconPos.y - lockMargin) && location.y < (iconPos.y + lockMargin)
-                            if isWithinCorridor && location.x <= (screen.width - thickness + 10) && location.x > (screen.width - 220) {
-                                semaphore.signal()
-                                return
-                            }
+                    // B. 鼠标位于图标 -> 预览条的梯形安全区时，保持当前 App 锁定
+                    if let bundleId = self.lastHoveredApp,
+                       let iconFrame = self.getDockIconFrame(for: bundleId),
+                       let safeZone = self.buildSafeTransitionZone(dockPos: dockPos, screen: screen, iconFrame: iconFrame) {
+                        if self.isMovingTowardPreviewArea(location: location, dockPos: dockPos, iconFrame: iconFrame),
+                       safeZone.contains(location) {
+                            self.cancelHoverTimer()
+                            semaphore.signal()
+                            return
                         }
                     }
                 }
@@ -202,4 +218,75 @@ class HoverEventMonitor {
         }
         return nil
     }
+    
+    private func getDockIconFrame(for bundleId: String) -> CGRect? {
+        DockIconCacheManager.shared.cachedIcons.first(where: { $0.bundleId == bundleId })?.frame
+    }
+    
+    private func buildSafeTransitionZone(dockPos: DockPosition, screen: CGRect, iconFrame: CGRect) -> SafeTransitionZone? {
+        guard !previewBarFrame.isEmpty else { return nil }
+
+        let iconCenter = CGPoint(x: iconFrame.midX, y: iconFrame.midY)
+        let previewCenter = CGPoint(x: previewBarFrame.midX, y: previewBarFrame.midY)
+        let vx = previewCenter.x - iconCenter.x
+        let vy = previewCenter.y - iconCenter.y
+        let len = sqrt(vx * vx + vy * vy)
+        guard len > 0.1 else { return nil }
+        
+        let dir = CGPoint(x: vx / len, y: vy / len)
+        let perp = CGPoint(x: -dir.y, y: dir.x)
+        
+        func halfExtent(_ rect: CGRect, along axis: CGPoint) -> CGFloat {
+            abs(axis.x) * rect.width * 0.5 + abs(axis.y) * rect.height * 0.5
+        }
+        
+        let iconHalfDepth = halfExtent(iconFrame, along: dir)
+        let iconHalfBreadth = halfExtent(iconFrame, along: perp)
+        let previewHalfDepth = halfExtent(previewBarFrame, along: dir)
+        let previewHalfBreadth = halfExtent(previewBarFrame, along: perp)
+        
+        // 图标侧短边：压进“朝向预览”的边界约 1/5（即离边界 20% 深度）。
+        let nearCenterOffset = iconHalfDepth * 0.6
+        var nearCenter = CGPoint(
+            x: iconCenter.x + dir.x * nearCenterOffset,
+            y: iconCenter.y + dir.y * nearCenterOffset
+        )
+        
+        // Dock 返回的 iconFrame 实际更接近“槽位框”，会比可视图标偏高。
+        // 对底部 Dock 做一层经验校正。
+        if dockPos == .bottom {
+            let correctedY = iconFrame.minY + iconFrame.height * 0.35
+            nearCenter.y = min(iconFrame.maxY - 2, max(nearCenter.y, correctedY))
+        }
+        
+        // 预览侧长边：严格锚在“朝向图标”的预览边界。
+        let farCenter = CGPoint(
+            x: previewCenter.x - dir.x * previewHalfDepth,
+            y: previewCenter.y - dir.y * previewHalfDepth
+        )
+        
+        let nearHalf = max(20, min(36, iconHalfBreadth * 0.85))
+        // 顶部长边严格对齐预览小窗底边宽度，不向两侧额外外扩。
+        let farHalf = previewHalfBreadth
+        
+        return SafeTransitionZone(
+            p1: CGPoint(x: nearCenter.x - perp.x * nearHalf, y: nearCenter.y - perp.y * nearHalf),
+            p2: CGPoint(x: nearCenter.x + perp.x * nearHalf, y: nearCenter.y + perp.y * nearHalf),
+            p3: CGPoint(x: farCenter.x + perp.x * farHalf, y: farCenter.y + perp.y * farHalf),
+            p4: CGPoint(x: farCenter.x - perp.x * farHalf, y: farCenter.y - perp.y * farHalf)
+        )
+    }
+    
+    private func isMovingTowardPreviewArea(location: CGPoint, dockPos: DockPosition, iconFrame: CGRect) -> Bool {
+        switch dockPos {
+        case .bottom:
+            // 仅在鼠标离开 Dock 图标“向上”进入预览区时启用保护，避免横向扫 Dock 时被强锁。
+            return location.y <= (iconFrame.midY - 2)
+        case .left:
+            return location.x >= (iconFrame.midX + 2)
+        case .right:
+            return location.x <= (iconFrame.midX - 2)
+        }
+    }
+    
 }

@@ -88,6 +88,9 @@ class SettingsManager: ObservableObject {
         }
     }
     
+    // MARK: - SideBar 联动（临时黑名单，不持久化）
+    @Published var sidebarManagedBundleIDs: [String] = []
+    
     private init() {
         // 加载菜单栏显示
         if defaults.object(forKey: kShowInMenuBar) == nil {
@@ -127,6 +130,17 @@ class SettingsManager: ObservableObject {
         
         // 加载黑名单
         self.blacklistedBundleIDs = defaults.stringArray(forKey: kBlacklistedBundleIDs) ?? []
+        
+        // 加载 SideBar 联动数据（主动读取一次，防止 SideBar 先启动的场景）
+        loadSideBarManagedApps()
+        
+        // 监听 SideBar 的跨进程广播
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(handleSideBarNotification),
+            name: NSNotification.Name("com.ivean.SideBar.managedAppsDidChange"),
+            object: nil
+        )
     }
     
     /// 翻译方法
@@ -154,5 +168,43 @@ class SettingsManager: ObservableObject {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.dock") {
             NSWorkspace.shared.open(url)
         }
+    }
+    
+    // MARK: - SideBar 联动接收方
+    
+    @objc private func handleSideBarNotification() {
+        loadSideBarManagedApps()
+    }
+    
+    /// 从共享文件读取 SideBar 当前管理的应用列表
+    private func loadSideBarManagedApps() {
+        let filePath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/ivean.shared/sidebar_managed_apps.json")
+        
+        guard FileManager.default.fileExists(atPath: filePath.path) else {
+            // 共享文件不存在（SideBar 未安装或未运行过），清空临时列表
+            DispatchQueue.main.async {
+                self.sidebarManagedBundleIDs = []
+            }
+            return
+        }
+        
+        do {
+            let data = try Data(contentsOf: filePath)
+            if let bundleIDs = try JSONSerialization.jsonObject(with: data) as? [String] {
+                DispatchQueue.main.async {
+                    self.sidebarManagedBundleIDs = bundleIDs
+                    // 通知各模块重新加载（复用现有的黑名单变更通知）
+                    NotificationCenter.default.post(name: .blacklistChanged, object: nil)
+                }
+            }
+        } catch {
+            print("[DockMinimize] 读取 SideBar 共享文件失败: \(error)")
+        }
+    }
+    
+    /// 综合判定某个 BundleID 是否应被跳过（用户黑名单 + SideBar 临时托管）
+    func shouldSkipApp(bundleID: String) -> Bool {
+        return blacklistedBundleIDs.contains(bundleID) || sidebarManagedBundleIDs.contains(bundleID)
     }
 }

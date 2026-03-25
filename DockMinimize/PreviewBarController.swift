@@ -129,6 +129,12 @@ class PreviewBarController: NSObject {
         start()
     }
     
+    /// 检查内部的 HoverEventMonitor 是否还活着
+    func isHoverMonitorAlive() -> Bool {
+        guard isStarted else { return true } // 未启动时不视为异常
+        return hoverMonitor.isAlive()
+    }
+    
     /// 显示预览条
     private func showPreviewBar(for bundleId: String, at position: CGPoint) {
         log.log("📺 Showing preview bar for \(bundleId)")
@@ -404,6 +410,7 @@ extension PreviewBarController: HoverEventMonitorDelegate {
             }
         }
     }
+    
 }
 
 // MARK: - PreviewStateManagerDelegate

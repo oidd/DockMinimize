@@ -29,7 +29,7 @@ class DockIconCacheManager {
     private func startAutoUpdate() {
         // 降低频率，降低系统压力
         queue.async { [weak self] in
-            while true {
+            while self != nil {
                 autoreleasepool {
                     self?.updateCache()
                 }
@@ -103,7 +103,7 @@ class DockIconCacheManager {
                             
                             if let bid = bundleId {
                                 // 检查黑名单，如果是黑名单软件，则不将其加入缩略图缓存，彻底不碰它
-                                if !SettingsManager.shared.blacklistedBundleIDs.contains(bid) {
+                                if !SettingsManager.shared.shouldSkipApp(bundleID: bid) {
                                     newIcons.append(DockIconInfo(frame: CGRect(origin: position, size: size), bundleId: bid))
                                 }
                             }
@@ -165,13 +165,23 @@ class DockEventMonitor {
         runLoopSource = nil
     }
     
+    /// 检查 EventTap 是否还活着
+    func isAlive() -> Bool {
+        guard let tap = eventTap else { return false }
+        return CGEvent.tapIsEnabled(tap: tap)
+    }
+    
     private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         // --- 深度稳定性加固：严禁在回调中进行任何阻塞式系统调用 ---
         
         // 1. 系统禁用检查 (HID 链条安全检查)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            // 被系统禁用时，通常是由于权限变更，直接退出是防止卡死的最优解
-            exit(0) 
+            // ⚠️ 严禁 exit(0)！EventTap 超时是常见事件（截图阻塞等），重新启用即可恢复
+            DebugLogger.shared.log("⚠️ [DockMonitor] EventTap disabled by \(type == .tapDisabledByTimeout ? "timeout" : "user input"), re-enabling...")
+            if let tap = self.eventTap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+            return Unmanaged.passUnretained(event)
         }
         
         // 2. 避免在系统设置窗口活跃时进行任何操作

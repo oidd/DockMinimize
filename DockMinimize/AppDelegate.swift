@@ -13,8 +13,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var dockEventMonitor: DockEventMonitor?
     private var previewBarController: PreviewBarController?
     
+    /// EventTap 健康检查定时器
+    private var healthCheckTimer: Timer?
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🚀 DockMinimize Version: ALIGNMENT_FIX_V2_DEPLOYED")
+        print("🚀 DockMinimize Version: CRASH_FIX_V3")
+        
+        // ⭐️ 注册全局崩溃处理器（在所有其它初始化之前）
+        setupCrashHandlers()
+        
         // 初始化菜单栏控制器
         menuBarController = MenuBarController()
         
@@ -38,9 +45,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: .accessibilityStatusChanged,
             object: nil
         )
+        
+        // ⭐️ 启动 EventTap 健康检查定时器（每 30 秒检查一次）
+        startHealthCheck()
+        
+        DebugLogger.shared.log("🚀 Application launched successfully")
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        DebugLogger.shared.log("👋 Application will terminate (normal exit)")
+        DebugLogger.shared.flush()
+        
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
         dockEventMonitor?.stop()
         previewBarController?.stop()
     }
@@ -72,5 +89,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard previewBarController == nil else { return }
         previewBarController = PreviewBarController.shared
         previewBarController?.start()
+    }
+    
+    // MARK: - 崩溃保护
+    
+    /// 注册全局崩溃处理器
+    private func setupCrashHandlers() {
+        // 1. ObjC 异常处理
+        NSSetUncaughtExceptionHandler { exception in
+            let logger = DebugLogger.shared
+            logger.logCritical("Uncaught exception: \(exception.name.rawValue)")
+            logger.logCritical("Reason: \(exception.reason ?? "unknown")")
+            logger.logCritical("Stack: \(exception.callStackSymbols.prefix(10).joined(separator: "\n"))")
+            logger.flush()
+        }
+        
+        // 2. Unix 信号处理（SIGSEGV、SIGABRT 等严重崩溃）
+        let signals: [Int32] = [SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGTRAP]
+        for sig in signals {
+            signal(sig) { signalNumber in
+                let logger = DebugLogger.shared
+                logger.logCritical("Fatal signal received: \(signalNumber)")
+                logger.flush()
+                // 还原默认处理并重新触发（产生正常的崩溃报告）
+                signal(signalNumber, SIG_DFL)
+                raise(signalNumber)
+            }
+        }
+    }
+    
+    // MARK: - EventTap 健康检查
+    
+    /// 每 30 秒检查 EventTap 是否还活着，如果死了就重建
+    private func startHealthCheck() {
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            
+            // 检查 DockEventMonitor
+            if let monitor = self.dockEventMonitor, !monitor.isAlive() {
+                DebugLogger.shared.logCritical("DockEventMonitor EventTap is dead! Rebuilding...")
+                monitor.stop()
+                self.dockEventMonitor = nil
+                self.startDockMonitoring()
+            }
+            
+            // 检查 HoverEventMonitor（通过 PreviewBarController 间接检查）
+            if let controller = self.previewBarController, !controller.isHoverMonitorAlive() {
+                DebugLogger.shared.logCritical("HoverEventMonitor EventTap is dead! Rebuilding...")
+                controller.stop()
+                self.previewBarController = nil
+                self.startHoverPreview()
+            }
+        }
     }
 }

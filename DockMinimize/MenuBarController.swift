@@ -60,7 +60,7 @@ class MenuBarController: NSObject {
         let menu = NSMenu()
         
         let settingsItem = NSMenuItem(
-            title: SettingsManager.shared.t("设置", "Settings"),
+            title: SettingsManager.shared.t("偏好设置", "Preferences"),
             action: #selector(showSettingsWindow),
             keyEquivalent: ""
         )
@@ -71,11 +71,10 @@ class MenuBarController: NSObject {
         menu.addItem(NSMenuItem.separator())
         
         let quitItem = NSMenuItem(
-            title: SettingsManager.shared.t("退出", "Quit"),
+            title: SettingsManager.shared.t("退出 DockMinimize", "Quit DockMinimize"),
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: ""
         )
-        // 使用一个更统一的图标
         quitItem.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
         menu.addItem(quitItem)
         
@@ -83,18 +82,11 @@ class MenuBarController: NSObject {
     }
     
     @objc private func handleStatusItemClick() {
-        let event = NSApp.currentEvent
-        
-        // 判定是否为右键点击（或者按住 Control 点击左键）
-        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
-            if let menu = contextMenu, let button = statusItem?.button {
-                statusItem?.menu = menu
-                button.performClick(nil) // 这一行触发系统弹出菜单
-                statusItem?.menu = nil // 弹出后立即解绑，保证下次点击能重新被 handleStatusItemClick 捕获
-            }
-        } else {
-            // 左键点击直达面板
-            showSettingsWindow()
+        // 左键和右键都弹出菜单
+        if let menu = contextMenu, let button = statusItem?.button {
+            statusItem?.menu = menu
+            button.performClick(nil)
+            statusItem?.menu = nil
         }
     }
     

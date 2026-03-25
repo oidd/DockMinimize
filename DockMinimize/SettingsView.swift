@@ -55,16 +55,6 @@ struct SettingsView: View {
                 }
                 .listStyle(.sidebar)
                 .navigationTitle("Dock Minimize")
-                .safeAreaInset(edge: .bottom) {
-                    Button(action: {
-                        NSApp.terminate(nil)
-                    }) {
-                        Label(t("退出软件", "Quit App"), systemImage: "power.circle")
-                            .foregroundColor(Color.red.opacity(0.8))
-                    }
-                    .buttonStyle(.plain)
-                    .padding()
-                }
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 220)
             } detail: {
                 contentView
@@ -127,10 +117,16 @@ struct SettingsView: View {
                 .opacity(settingsManager.language == .simplifiedChinese ? 0.3 : 0.5)
         }
         .padding(.horizontal, 32)
-        .background(Color(NSColor.windowBackgroundColor)) // 实色背景遮挡下方滚动内容
+        .padding(.top, -10) // 向上收紧避免留白
+        .background(
+            Color(NSColor.windowBackgroundColor)
+                .padding(.top, -100) // 背景向上延伸，彻底遮挡滚动内容穿透
+        )
     }
     
     // MARK: - About Tab Sub-components
+    
+    @Environment(\.colorScheme) private var aboutColorScheme
     
     private var aboutAppHeader: some View {
         HStack(spacing: 16) {
@@ -139,33 +135,72 @@ struct SettingsView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 64, height: 64)
-                    .cornerRadius(12)
-                    .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(
+                                LinearGradient(
+                                    gradient: Gradient(stops: [
+                                        .init(color: Color.white.opacity(aboutColorScheme == .dark ? 0.45 : 0.15), location: 0.0),
+                                        .init(color: Color.white.opacity(0.0), location: 0.5),
+                                        .init(color: Color.white.opacity(aboutColorScheme == .dark ? 0.15 : 0.0), location: 1.0)
+                                    ]),
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
+                    )
+                    .shadow(color: Color.black.opacity(aboutColorScheme == .dark ? 0.5 : 0.15), radius: 6, x: 0, y: 3)
             }
             
-            VStack(alignment: .leading, spacing: 4) {
-                Text("DockMinimize")
-                    .font(.title2)
-                    .bold()
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("DockMinimize")
+                        .font(.title2)
+                        .bold()
+                    
+                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.gray.opacity(0.15))
+                        .cornerRadius(4)
+                }
                 
                 Text(t("在 macOS 上实现类似 Windows 系统的单击隐藏和显示窗口", "Single-click to hide and show windows on macOS, just like Windows."))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 
-                Button(action: {
-                    if let url = URL(string: "https://ivean.com/dockminimize/") {
-                        NSWorkspace.shared.open(url)
+                HStack(spacing: 12) {
+                    Button(action: {
+                        if let url = URL(string: "https://ivean.com/dockminimize/") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "globe")
+                            Text(t("访问网站", "Visit Website"))
+                        }
+                        .font(.system(size: 12, weight: .medium))
                     }
-                }) {
-                    HStack(spacing: 4) {
-                        Text(t("访问网站", "Visit Website"))
-                        Image(systemName: "arrow.up.right")
+                    .buttonStyle(.plain)
+                    .foregroundColor(.accentColor)
+                    
+                    Button(action: {
+                        UpdateChecker.shared.checkForUpdates(manual: true)
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text(t("检查更新", "Check for Updates"))
+                        }
+                        .font(.system(size: 12, weight: .medium))
                     }
-                    .font(.caption)
+                    .buttonStyle(.plain)
                     .foregroundColor(.accentColor)
                 }
-                .buttonStyle(.plain)
                 .padding(.top, 2)
             }
         }
@@ -196,10 +231,10 @@ struct SettingsView: View {
                 url: "https://ivean.com/fluxtimer/"
             ),
             RecommendedTool(
-                name: t("轻待办", "Light Todo"),
-                slogan: t("极致轻量，随叫随到。让待办事项如灵感般轻盈。", "Minimalist, Always Ready. Making tasks as light as inspiration."),
-                iconName: "light_todo",
-                url: "https://ivean.com/lighttodo/"
+                name: "SideBar",
+                slogan: t("将屏幕边缘的魔法收纳术带给所有的第三方应用。拖拽吸附，悬停弹射，纯粹且静谧。", "Bring the magic of screen-edge stashing to any third-party app. Drag to snap, hover to expand. Pure and silent."),
+                iconName: "sidebar",
+                url: "https://www.ivean.com/sidebar/"
             ),
             RecommendedTool(
                 name: t("快速搜索", "Quick Search"),
@@ -503,13 +538,27 @@ private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>)
             .background(Color.orange.opacity(0.1))
             .cornerRadius(12)
             
-            // 2. 只有当黑名单不为空时，才显示管理方框
-            if !settingsManager.blacklistedBundleIDs.isEmpty {
-                VStack(alignment: .leading, spacing: 12) {
+            // 2. 排除的应用标题 + 添加按钮（始终显示）
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
                     Text(t("排除的应用", "Excluded Applications"))
                         .font(.headline)
                         .foregroundColor(.primary)
                     
+                    Spacer()
+                    
+                    Button(action: {
+                        showAppPicker()
+                    }) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.blue)
+                    }
+                    .buttonStyle(.plain)
+                    .help(t("添加黑名单软件", "Add Blacklisted App"))
+                }
+                
+                if !settingsManager.blacklistedBundleIDs.isEmpty {
                     GroupBox {
                         VStack(spacing: 0) {
                             ForEach(settingsManager.blacklistedBundleIDs, id: \.self) { bid in
@@ -558,15 +607,67 @@ private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>)
                 }
             }
             
-            // 3. 添加按钮 (始终左对齐)
-            Button(action: {
-                showAppPicker()
-            }) {
-                Label(t("添加黑名单软件...", "Add Blacklisted App..."), systemImage: "plus.circle.fill")
-                    .padding(.horizontal, 4)
+            if !settingsManager.sidebarManagedBundleIDs.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "link.circle.fill")
+                            .foregroundColor(.blue)
+                            .font(.system(size: 13))
+                        Text(t("SideBar 联动排除", "SideBar Linked Exclusions"))
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                    }
+                    
+                    Text(t("以下应用正在由 SideBar 管理贴边控制，已自动排除。此列表由 SideBar 实时同步，无需手动操作。",
+                           "The following apps are managed by SideBar for edge-snapping control and are automatically excluded. This list is synced in real-time by SideBar."))
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .lineSpacing(3)
+                    
+                    GroupBox {
+                        VStack(spacing: 0) {
+                            ForEach(settingsManager.sidebarManagedBundleIDs, id: \.self) { bid in
+                                HStack(spacing: 12) {
+                                    if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid),
+                                       let icon = NSWorkspace.shared.icon(forFile: appURL.path) as NSImage? {
+                                        Image(nsImage: icon)
+                                            .resizable()
+                                            .frame(width: 28, height: 28)
+                                    } else {
+                                        Image(systemName: "app.dashed")
+                                            .resizable()
+                                            .frame(width: 28, height: 28)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(getAppName(for: bid))
+                                            .font(.system(size: 14, weight: .medium))
+                                        Text(bid)
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    Text(t("由 SideBar 管理", "Managed by SideBar"))
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.blue.opacity(0.7))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.blue.opacity(0.1))
+                                        .cornerRadius(4)
+                                }
+                                .padding(.vertical, 10)
+                                
+                                if bid != settingsManager.sidebarManagedBundleIDs.last {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
             
             Spacer()
         }
@@ -683,6 +784,7 @@ struct RecommendedTool: Identifiable {
 struct RecommendationRow: View {
     let tool: RecommendedTool
     @State private var isHovered = false
+    @State private var loadedIcon: NSImage?
     
     var body: some View {
         Button(action: {
@@ -691,34 +793,33 @@ struct RecommendationRow: View {
             }
         }) {
             HStack(spacing: 12) {
-                // Icon
-                if let iconUrl = Bundle.main.url(forResource: tool.iconName, withExtension: "png", subdirectory: "Recommends") {
-                    if let nsImage = NSImage(contentsOf: iconUrl) {
-                        Image(nsImage: nsImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 40, height: 40)
-                            .cornerRadius(8)
-                    } else {
-                        Image(systemName: "app.fill")
-                            .resizable()
-                            .frame(width: 40, height: 40)
-                            .foregroundColor(.secondary.opacity(0.2))
-                    }
+                // Icon（使用预加载的缓存图标）
+                if let nsImage = loadedIcon {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 40, height: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(
+                                    LinearGradient(
+                                        gradient: Gradient(stops: [
+                                            .init(color: Color.white.opacity(0.35), location: 0.0),
+                                            .init(color: Color.white.opacity(0.0), location: 0.5),
+                                            .init(color: Color.white.opacity(0.1), location: 1.0)
+                                        ]),
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    lineWidth: 0.5
+                                )
+                        )
                 } else {
-                    // Fallback to name-based if URL search fails (useful for Assets)
-                    if let nsImage = NSImage(named: tool.iconName) {
-                        Image(nsImage: nsImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 40, height: 40)
-                            .cornerRadius(8)
-                    } else {
-                        Image(systemName: "app.fill")
-                            .resizable()
-                            .frame(width: 40, height: 40)
-                            .foregroundColor(.secondary.opacity(0.2))
-                    }
+                    Image(systemName: "app.fill")
+                        .resizable()
+                        .frame(width: 40, height: 40)
+                        .foregroundColor(.secondary.opacity(0.2))
                 }
                 
                 VStack(alignment: .leading, spacing: 2) {
@@ -756,7 +857,15 @@ struct RecommendationRow: View {
                 isHovered = hovering
             }
         }
+        .onAppear {
+            if loadedIcon == nil {
+                if let iconUrl = Bundle.main.url(forResource: tool.iconName, withExtension: "png", subdirectory: "Recommends") {
+                    loadedIcon = NSImage(contentsOf: iconUrl)
+                } else {
+                    loadedIcon = NSImage(named: tool.iconName)
+                }
+            }
+        }
     }
 }
-
 
