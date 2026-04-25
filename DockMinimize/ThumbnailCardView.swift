@@ -1,0 +1,178 @@
+//
+//  ThumbnailCardView.swift
+//  DockMinimize
+//
+//  单个缩略图卡片视图
+//
+
+import SwiftUI
+
+struct ThumbnailCardView: View {
+    let windowInfo: WindowThumbnailService.WindowInfo
+    let thumbnail: NSImage?
+    let isActive: Bool
+    let isHovered: Bool
+    // ⭐️ 新增：动画触发器
+    var bumpTrigger: Date? = nil
+    
+    let onClick: () -> Void
+    let onHover: (Bool) -> Void
+    let onClose: () -> Void
+    
+    /// 缩略图尺寸
+    private let thumbnailWidth: CGFloat = 160
+    private let thumbnailHeight: CGFloat = 100
+    
+    @State private var isBumping: Bool = false
+    
+    var body: some View {
+        VStack(spacing: 6) {
+            // 窗口标题
+            Text(windowInfo.title.isEmpty ? windowInfo.ownerName : windowInfo.title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(0.9))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: thumbnailWidth)
+            
+            // 缩略图
+            ZStack {
+                // 背景
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.black.opacity(0.3))
+                    .frame(width: thumbnailWidth, height: thumbnailHeight)
+                
+                // 缩略图内容
+                if let thumbnail = thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: thumbnailWidth, height: thumbnailHeight)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    // 占位符
+                    Image(systemName: "rectangle.on.rectangle")
+                        .font(.system(size: 32))
+                }
+                
+                // ⭐️ 新增：一键关闭按钮
+                // 仅在鼠标悬浮时出现
+                if isHovered {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Button(action: {
+                                onClose()
+                            }) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.gray.opacity(0.8))
+                                        .frame(width: 20, height: 20)
+                                    
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .padding([.top, .trailing], 6)
+                        }
+                        Spacer()
+                    }
+                }
+            }
+            .scaleEffect(isHovered ? 1.05 : 1.0)
+            .shadow(color: .black.opacity(isHovered ? 0.4 : 0.2), radius: isHovered ? 10 : 5)
+            .animation(.easeInOut(duration: 0.15), value: isHovered)
+            
+            // ⭐️ Peek 状态指示条 (仿 Windows 风格)
+            // 隐藏状态：短灰条
+            // 显示状态：长蓝条
+            Capsule()
+                .fill(windowInfo.isMinimized ? Color.secondary.opacity(0.5) : Color(nsColor: .controlAccentColor))
+                .opacity(windowInfo.isMinimized ? 1.0 : (isActive ? 1.0 : 0.5)) // ⭐️ 非活跃显示窗口设置为 50% 透明度
+                .frame(width: windowInfo.isMinimized ? 16 : 42, height: 4)
+                .offset(y: isBumping ? -8 : 0) // ⭐️ 上抬动画
+                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isBumping) // 弹性动画
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: windowInfo.isMinimized)
+                .animation(.easeInOut(duration: 0.2), value: isActive) // ⭐️ 透明度平滑切换
+                .padding(.top, 2)
+                .onChange(of: bumpTrigger) { _ in
+                    // 触发上抬 -> 下落动画
+                    isBumping = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        isBumping = false
+                    }
+                }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        // ⭐️ 核心修复：使用 DragGesture(minimumDistance: 0) 替代 onTapGesture
+        // 这样即使鼠标在点击过程中发生了移动（在 bounds 范围内），也能正确识别为点击
+        // 解决了“移动中点击失效”的问题
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onEnded { value in
+                    // 简单的判定：如果释放点还在视图范围内（允许少量溢出容差），就认为是点击
+                    // 这里的 value.location 是相对于视图左上角的
+                    // 缩略图宽度约 176 (160+16padding)，高度约 150
+                    // 我们给一个宽松的判定区域
+                    let x = value.location.x
+                    let y = value.location.y
+                    
+                    // 容差 20px
+                    if x > -20 && x < 200 && y > -20 && y < 180 {
+                        onClick()
+                    }
+                }
+        )
+        .onHover { hovering in
+            onHover(hovering)
+        }
+    }
+}
+
+// MARK: - Preview
+
+#if DEBUG
+struct ThumbnailCardView_Previews: PreviewProvider {
+    static var previews: some View {
+        // 创建一个 dummy AXUIElement 用于预览
+        let dummyAppElement = AXUIElementCreateApplication(getpid())
+        let windowInfo = WindowThumbnailService.WindowInfo(
+            windowId: 1,
+            title: "Google - 首页",
+            ownerPID: getpid(),
+            ownerName: "Google Chrome",
+            bounds: .zero,
+            axElement: dummyAppElement,
+            appAxElement: dummyAppElement
+        )
+        
+        HStack {
+            ThumbnailCardView(
+                windowInfo: windowInfo,
+                thumbnail: nil,
+                isActive: false,
+                isHovered: false,
+                onClick: {},
+                onHover: { _ in },
+                onClose: {}
+            )
+            
+            ThumbnailCardView(
+                windowInfo: windowInfo,
+                thumbnail: nil,
+                isActive: true,
+                isHovered: true,
+                onClick: {},
+                onHover: { _ in },
+                onClose: {}
+            )
+        }
+        .padding()
+        .background(Color.black.opacity(0.5))
+    }
+}
+#endif
