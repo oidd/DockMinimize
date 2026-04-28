@@ -13,6 +13,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var dockEventMonitor: DockEventMonitor?
     private var previewBarController: PreviewBarController?
     private var hotkeyMonitor: HotkeyMonitor?
+    private let dockOwnershipTipController = DockOwnershipTipController.shared
     
     /// EventTap 健康检查定时器
     private var healthCheckTimer: Timer?
@@ -26,6 +27,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 初始化菜单栏控制器
         menuBarController = MenuBarController()
         SideBarBridge.shared.start(with: SettingsManager.shared.hotkeyBindings)
+        dockOwnershipTipController.start()
         
         // 检查辅助功能权限后启动 Dock 事件监听
         if AccessibilityManager.shared.isAccessibilityEnabled {
@@ -58,6 +60,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // ⭐️ 启动 EventTap 健康检查定时器（每 30 秒检查一次）
         startHealthCheck()
+        
+        // 按用户设置执行后台静默更新检查（仅在有新版本时弹窗）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            UpdateChecker.shared.performScheduledCheckIfNeeded()
+        }
         
         DebugLogger.shared.log("🚀 Application launched successfully")
     }

@@ -29,6 +29,20 @@ enum AppLanguage: String, CaseIterable {
     }
 }
 
+enum UpdateCheckFrequency: String, CaseIterable {
+    case never = "never"
+    case everyLaunch = "everyLaunch"
+    case weekly = "weekly"
+    
+    func displayName(t: (String, String) -> String) -> String {
+        switch self {
+        case .never:       return t("从不检查", "Never")
+        case .everyLaunch: return t("每次启动", "On Launch")
+        case .weekly:      return t("每周一次", "Weekly")
+        }
+    }
+}
+
 class SettingsManager: ObservableObject {
     static let shared = SettingsManager()
     
@@ -40,6 +54,10 @@ class SettingsManager: ObservableObject {
     private let kHoverPreviewEnabled = "hoverPreviewEnabled"
     private let kBlacklistedBundleIDs = "blacklistedBundleIDs"
     private let kHotkeyBindings = "hotkeyBindings"
+    private let kSuppressDockMinimizeOwnershipTip = "suppressDockMinimizeOwnershipTip"
+    private let kSuppressSideBarOwnershipTip = "suppressSideBarOwnershipTip"
+    private let kUpdateCheckFrequency = "updateCheckFrequency"
+    private let kLastUpdateCheckDate = "lastUpdateCheckDate"
     
     // Removed OperationMode property
     
@@ -99,6 +117,34 @@ class SettingsManager: ObservableObject {
             NotificationCenter.default.post(name: .hotkeyBindingsChanged, object: nil)
         }
     }
+
+    @Published var suppressDockMinimizeOwnershipTip: Bool {
+        didSet {
+            defaults.set(suppressDockMinimizeOwnershipTip, forKey: kSuppressDockMinimizeOwnershipTip)
+        }
+    }
+
+    @Published var suppressSideBarOwnershipTip: Bool {
+        didSet {
+            defaults.set(suppressSideBarOwnershipTip, forKey: kSuppressSideBarOwnershipTip)
+        }
+    }
+    
+    @Published var updateCheckFrequency: UpdateCheckFrequency {
+        didSet {
+            defaults.set(updateCheckFrequency.rawValue, forKey: kUpdateCheckFrequency)
+        }
+    }
+    
+    @Published var lastUpdateCheckDate: Date? {
+        didSet {
+            if let date = lastUpdateCheckDate {
+                defaults.set(date, forKey: kLastUpdateCheckDate)
+            } else {
+                defaults.removeObject(forKey: kLastUpdateCheckDate)
+            }
+        }
+    }
     
     // MARK: - SideBar 联动（不持久化）
     @Published var sidebarDockExcludedBundleIDs: [String] = []
@@ -155,6 +201,20 @@ class SettingsManager: ObservableObject {
         } else {
             self.hotkeyBindings = []
         }
+
+        self.suppressDockMinimizeOwnershipTip = defaults.bool(forKey: kSuppressDockMinimizeOwnershipTip)
+        self.suppressSideBarOwnershipTip = defaults.bool(forKey: kSuppressSideBarOwnershipTip)
+        
+        // 加载更新检查频率（默认从不检查）
+        if let savedFreq = defaults.string(forKey: kUpdateCheckFrequency),
+           let freq = UpdateCheckFrequency(rawValue: savedFreq) {
+            self.updateCheckFrequency = freq
+        } else {
+            self.updateCheckFrequency = .never
+        }
+        
+        // 加载上次自动检查时间
+        self.lastUpdateCheckDate = defaults.object(forKey: kLastUpdateCheckDate) as? Date
         
         // 加载 SideBar 联动数据（主动读取一次，防止 SideBar 先启动的场景）
         SideBarBridge.shared.loadInitialState()
@@ -171,6 +231,24 @@ class SettingsManager: ObservableObject {
     /// 翻译方法
     func t(_ zh: String, _ en: String) -> String {
         return language == .simplifiedChinese ? zh : en
+    }
+
+    func shouldSuppressDockOwnershipTip(for owner: SideBarHotkeyClaim.HotkeyOwner) -> Bool {
+        switch owner {
+        case .dockminimize:
+            return suppressDockMinimizeOwnershipTip
+        case .sidebar:
+            return suppressSideBarOwnershipTip
+        }
+    }
+
+    func setSuppressDockOwnershipTip(_ suppressed: Bool, for owner: SideBarHotkeyClaim.HotkeyOwner) {
+        switch owner {
+        case .dockminimize:
+            suppressDockMinimizeOwnershipTip = suppressed
+        case .sidebar:
+            suppressSideBarOwnershipTip = suppressed
+        }
     }
     
     private func updateLaunchAtLogin() {
@@ -204,12 +282,23 @@ class SettingsManager: ObservableObject {
     private func applySideBarBridgeState() {
         sidebarDockExcludedBundleIDs = SideBarBridge.shared.dockExcludedBundleIDs
         sidebarHotkeyClaims = SideBarBridge.shared.hotkeyClaims
+        DispatchQueue.global(qos: .userInitiated).async {
+            DockIconCacheManager.shared.updateCache()
+        }
         NotificationCenter.default.post(name: .blacklistChanged, object: nil)
     }
 
     /// 用于 Dock 点击、缩略图采集和预览条的跳过规则。
     func shouldSkipDockHandling(bundleID: String) -> Bool {
-        blacklistedBundleIDs.contains(bundleID) || sidebarDockExcludedBundleIDs.contains(bundleID)
+        if blacklistedBundleIDs.contains(bundleID) {
+            return true
+        }
+
+        if let controlOwner = SideBarBridge.shared.controlOwner(for: bundleID) {
+            return controlOwner == .sidebar
+        }
+
+        return sidebarDockExcludedBundleIDs.contains(bundleID)
     }
 
     /// 用于应用级快捷键路由的 SideBar 接管判断。

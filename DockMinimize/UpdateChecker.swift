@@ -16,6 +16,26 @@ class UpdateChecker {
         SettingsManager.shared.t(zh, en)
     }
     
+    /// 根据用户设置的频率执行后台静默更新检查
+    /// - 静默执行：无更新时不弹任何窗口；有更新时才弹下载提示
+    func performScheduledCheckIfNeeded() {
+        let frequency = SettingsManager.shared.updateCheckFrequency
+        
+        switch frequency {
+        case .never:
+            return
+        case .everyLaunch:
+            checkForUpdates(manual: false)
+        case .weekly:
+            let lastDate = SettingsManager.shared.lastUpdateCheckDate
+            let oneWeek: TimeInterval = 7 * 24 * 60 * 60
+            if let lastDate, Date().timeIntervalSince(lastDate) < oneWeek {
+                return
+            }
+            checkForUpdates(manual: false)
+        }
+    }
+    
     func checkForUpdates(manual: Bool = false) {
         var request = URLRequest(url: updateInfoURL)
         request.timeoutInterval = 5
@@ -35,6 +55,13 @@ class UpdateChecker {
                 return
             }
             
+            // 自动检查成功收到响应：更新最后检查时间（用于"每周一次"判定）
+            if !manual {
+                DispatchQueue.main.async {
+                    SettingsManager.shared.lastUpdateCheckDate = Date()
+                }
+            }
+            
             do {
                 if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
                    let latestVersion = json["version"] as? String {
@@ -45,7 +72,7 @@ class UpdateChecker {
                         
                         let releaseNotes = json["release_notes"] as? String ?? self.t("包含重要的性能改进与功能更新。", "Includes important performance improvements and feature updates.")
                         
-                        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.2"
+                        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.3"
                         
                         if self.isVersionGreaterThan(latestVersion, currentVersion) {
                             DispatchQueue.main.async {

@@ -32,6 +32,7 @@
 		A1000024 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* HotkeyManager.swift */; };
 		A1000025 /* SideBarBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* SideBarBridge.swift */; };
 		A1000028 /* Recommends in Resources */ = {isa = PBXBuildFile; fileRef = A2000031 /* Recommends */; };
+		A1000029 /* DockOwnershipTipController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000032 /* DockOwnershipTipController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -65,6 +66,7 @@
 		A2000029 /* AboutAppIconDark.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Resources/AboutAppIconDark.png; sourceTree = "<group>"; };
 		A2000030 /* AboutAppIconLight.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Resources/AboutAppIconLight.png; sourceTree = "<group>"; };
 		A2000031 /* Recommends */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/Recommends; sourceTree = "<group>"; };
+		A2000032 /* DockOwnershipTipController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockOwnershipTipController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -111,6 +113,7 @@
 				A2000025 /* UpdateChecker.swift */,
 				A2000027 /* HotkeyManager.swift */,
 				A2000028 /* SideBarBridge.swift */,
+				A2000032 /* DockOwnershipTipController.swift */,
 				A2000026 /* AppIcon.icon */,
 				A2000029 /* AboutAppIconDark.png */,
 				A2000030 /* AboutAppIconLight.png */,
@@ -224,6 +227,7 @@
 				A1000022 /* UpdateChecker.swift in Sources */,
 				A1000024 /* HotkeyManager.swift in Sources */,
 				A1000025 /* SideBarBridge.swift in Sources */,
+				A1000029 /* DockOwnershipTipController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -367,7 +371,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.2;
+				MARKETING_VERSION = 1.0.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dockminimize.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -396,7 +400,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.2;
+				MARKETING_VERSION = 1.0.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dockminimize.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

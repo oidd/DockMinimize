@@ -8,6 +8,19 @@ import Foundation
 
 extension Notification.Name {
     static let sideBarBridgeStateChanged = Notification.Name("sideBarBridgeStateChanged")
+    static let sideBarBridgeOwnershipTransferReceived = Notification.Name("sideBarBridgeOwnershipTransferReceived")
+}
+
+struct SideBarOwnershipTransferNotice {
+    enum Reason: String {
+        case detachedFromEdge = "detached_from_edge"
+        case snappedWithFloatingSiblings = "snapped_with_floating_siblings"
+    }
+
+    let bundleID: String
+    let appName: String
+    let owner: SideBarHotkeyClaim.HotkeyOwner
+    let reason: Reason
 }
 
 struct SideBarHotkeyClaim: Codable, Equatable {
@@ -63,6 +76,7 @@ final class SideBarBridge: NSObject {
         static let requestSideBarHotkeyAction = NSNotification.Name("com.ivean.DockMinimize.requestSideBarHotkeyAction")
         static let sideBarHotkeyActionAck = NSNotification.Name("com.ivean.SideBar.sideBarHotkeyActionAck")
         static let hotkeyBindingsChanged = NSNotification.Name("com.ivean.DockMinimize.hotkeyBindingsDidChange")
+        static let bundleControlOwnershipChanged = NSNotification.Name("com.ivean.SideBar.bundleControlOwnershipChanged")
     }
 
     private struct FileNames {
@@ -155,6 +169,13 @@ final class SideBarBridge: NSObject {
                 name: NotificationNames.sideBarHotkeyActionAck,
                 object: nil
             )
+
+            distributedCenter.addObserver(
+                self,
+                selector: #selector(handleBundleControlOwnershipChanged(_:)),
+                name: NotificationNames.bundleControlOwnershipChanged,
+                object: nil
+            )
         }
 
         loadInitialState()
@@ -171,6 +192,10 @@ final class SideBarBridge: NSObject {
             return false
         }
         return shouldHonorHotkeyClaim(claim, for: bundleID)
+    }
+
+    func controlOwner(for bundleID: String) -> SideBarHotkeyClaim.HotkeyOwner? {
+        hotkeyClaims[bundleID]?.hotkeyOwner
     }
 
     func requestSideBarHotkeyAction(
@@ -289,6 +314,33 @@ final class SideBarBridge: NSObject {
 
             let handled = userInfo["handled"] as? Bool ?? false
             self.resolvePendingRequest(requestID: requestID, handled: handled)
+        }
+    }
+
+    @objc private func handleBundleControlOwnershipChanged(_ notification: Notification) {
+        guard let userInfo = notification.userInfo else { return }
+        let bundleID = userInfo["bundleID"] as? String ?? ""
+        let appName = userInfo["appName"] as? String ?? bundleID
+        let ownerRawValue = userInfo["owner"] as? String ?? ""
+        let reasonRawValue = userInfo["reason"] as? String ?? ""
+        guard !bundleID.isEmpty,
+              let owner = SideBarHotkeyClaim.HotkeyOwner(rawValue: ownerRawValue),
+              let reason = SideBarOwnershipTransferNotice.Reason(rawValue: reasonRawValue) else {
+            return
+        }
+
+        let notice = SideBarOwnershipTransferNotice(
+            bundleID: bundleID,
+            appName: appName.isEmpty ? bundleID : appName,
+            owner: owner,
+            reason: reason
+        )
+
+        DispatchQueue.main.async {
+            self.notificationCenter.post(
+                name: .sideBarBridgeOwnershipTransferReceived,
+                object: notice
+            )
         }
     }
 

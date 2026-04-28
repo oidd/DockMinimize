@@ -94,9 +94,12 @@ class MenuBarController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         
         if settingsWindow == nil {
+            let fixedSize = NSSize(width: 700, height: 480)
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 320, height: 460),
-                styleMask: [.titled, .closable, .fullSizeContentView],
+                contentRect: NSRect(origin: .zero, size: fixedSize),
+                // 保留 .resizable 让 NavigationSplitView 内部布局更顺畅，
+                // 通过 minSize == maxSize 来锁死窗口尺寸，鼠标拖边将无效。
+                styleMask: [.titled, .closable, .fullSizeContentView, .resizable],
                 backing: .buffered,
                 defer: false
             )
@@ -106,6 +109,11 @@ class MenuBarController: NSObject {
             window.isMovableByWindowBackground = true
             window.standardWindowButton(.miniaturizeButton)?.isHidden = true
             window.standardWindowButton(.zoomButton)?.isHidden = true
+            // 锁死窗口尺寸：用户无法手动拖动改变大小，
+            // 同时 SwiftUI 内部仍有 minWidth/maxWidth 容差，避免 NavigationSplitView 折叠按钮卡顿。
+            window.minSize = fixedSize
+            window.maxSize = fixedSize
+            window.setContentSize(fixedSize)
             window.contentViewController = NSHostingController(rootView: SettingsView())
             window.level = .normal
             window.isReleasedWhenClosed = false
@@ -115,7 +123,7 @@ class MenuBarController: NSObject {
         // 偏移显示，避免挡住系统的权限请求弹窗（系统弹窗通常居中）
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
-            let windowSize = settingsWindow?.frame.size ?? NSSize(width: 320, height: 460)
+            let windowSize = settingsWindow?.frame.size ?? NSSize(width: 700, height: 480)
             
             // 默认居中位置
             var x = (screenFrame.width - windowSize.width) / 2

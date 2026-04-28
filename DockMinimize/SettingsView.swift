@@ -67,7 +67,11 @@ struct SettingsView: View {
                 contentView
                     .background(Color(NSColor.windowBackgroundColor))
             }
-            .frame(width: 700, height: 480) // 1. 缩小窗口尺寸
+            // 让 SwiftUI 认为自己可以收缩到很窄（200pt），从而 NavigationSplitView
+            // 侧栏折叠/展开时有充足的伸缩空间，不会卡顿。
+            // 实际窗口尺寸由 MenuBarController 通过 NSWindow.minSize=maxSize 锁定为 700×480。
+            .frame(minWidth: 200, idealWidth: 700, maxWidth: 900,
+                   minHeight: 200, idealHeight: 480, maxHeight: 900)
             .sheet(isPresented: $showHotkeyAppPickerSheet) {
                 HotkeyAppPickerSheet(
                     excludedBundleIDs: Set(settingsManager.hotkeyBindings.map(\.bundleID))
@@ -172,7 +176,7 @@ struct SettingsView: View {
                         .font(.title2)
                         .bold()
                     
-                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.2")")
+                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.3")")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .padding(.horizontal, 6)
@@ -195,18 +199,6 @@ struct SettingsView: View {
                         HStack(spacing: 4) {
                             Image(systemName: "globe")
                             Text(t("访问网站", "Visit Website"))
-                        }
-                        .font(.system(size: 12, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(.accentColor)
-                    
-                    Button(action: {
-                        UpdateChecker.shared.checkForUpdates(manual: true)
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                            Text(t("检查更新", "Check for Updates"))
                         }
                         .font(.system(size: 12, weight: .medium))
                     }
@@ -417,6 +409,44 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.menu)
                     .frame(width: 120)
+                }
+                .padding(12)
+            }
+            
+            // GroupBox 3: 检查更新
+            GroupBox {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 18))
+                        .frame(width: 30, alignment: .center)
+                        .foregroundColor(.accentColor)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(t("检查更新", "Check for Updates"))
+                            .font(.system(size: 14))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(t("当前版本：", "Current Version: ") + appVersionString)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    
+                    Spacer(minLength: 8)
+                    
+                    Button(t("立即检查", "Check Now")) {
+                        UpdateChecker.shared.checkForUpdates(manual: true)
+                    }
+                    .frame(minWidth: 86)
+                    
+                    Picker("", selection: $settingsManager.updateCheckFrequency) {
+                        ForEach(UpdateCheckFrequency.allCases, id: \.self) { freq in
+                            Text(freq.displayName(t: t)).tag(freq)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 110)
                 }
                 .padding(12)
             }
@@ -906,6 +936,10 @@ private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>)
     // MARK: - Helper
     private func t(_ zh: String, _ en: String) -> String {
         return settingsManager.t(zh, en)
+    }
+    
+    private var appVersionString: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.3"
     }
     
     // MARK: - Sidebar Row View

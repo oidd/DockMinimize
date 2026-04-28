@@ -268,7 +268,31 @@ class DockEventMonitor {
                         }
                         self.lastProcessedTime = Date()
                         
-                        // ⭐️ 核心通用修复：无论应用是否在前台或隐藏，只要判定为“真正无窗口”，必须放行给系统触发 Reopen。
+                        // ⭐️ 修复指示条状态不同步 Bug：将 action 判断和通知发送提前到耗时的窗口检查之前
+                        // 原因：CGWindowList + getWindows 等 AX 查询对重型应用（如"系统设置"）可能耗时 >10ms，
+                        // 超过超时保险箱的 10ms 限制后，后台线程会因 isExpired() 提前退出，导致通知永远发不出去。
+                        // 结果：窗口状态变了（系统 Dock 放行了点击），但指示条没收到通知，状态错位。
+                        
+                        // ⭐️ UI 瞬间响应：先发通知，后做窗口检查和操作。保证指示条第一时间就变。
+                        // action 判断只需要 frontmostApplication + isHidden，不依赖耗时的窗口列表查询。
+                        let isAlreadyActive = (NSWorkspace.shared.frontmostApplication?.bundleIdentifier == clickedBundleId) && !targetApp.isHidden
+                        let action = isAlreadyActive ? "toggle" : "activate"
+                        
+                        // 🔥 通知必须在窗口检查之前发出，否则超时会导致通知丢失
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("DockIconClicked"),
+                            object: nil,
+                            userInfo: ["bundleId": clickedBundleId, "action": action]
+                        )
+                        
+                        if isExpired() {
+                            // 即使超时，通知已经发出去了，指示条会正确更新。
+                            // 事件被放行给系统 Dock 处理，窗口操作由系统完成。
+                            semaphore.signal()
+                            return
+                        }
+                        
+                        // ⭐️ 核心通用修复：无论应用是否在前台或隐藏，只要判定为"真正无窗口"，必须放行给系统触发 Reopen。
                         
                         var hasVisibleWindows = false
                         if let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
@@ -290,6 +314,11 @@ class DockEventMonitor {
                         
                         // 如果没有可见窗口，检查是否是真的一个窗口都没有（包括缩小的）
                         if !hasVisibleWindows {
+                            if isExpired() {
+                                // 超时了，放行给系统处理（通知已发出）
+                                semaphore.signal()
+                                return
+                            }
                             let totalWindows = WindowThumbnailService.shared.getWindows(for: clickedBundleId, respectDockExclusions: false)
                             if totalWindows.isEmpty && clickedBundleId != "com.apple.finder" {
                                 // 真正无窗口状态 -> 放行给系统触发 Reopen
@@ -298,22 +327,10 @@ class DockEventMonitor {
                             }
                         }
                         
-                        // ⭐️ UI 瞬间响应：先发通知，后调逻辑。保证指示条第一秒就变。
-                        // 如果已经在前台，意图是 Toggle (最小化/恢复)
-                        // 如果在后台，意图是 Activate (提升至最前)
-                        let isAlreadyActive = (NSWorkspace.shared.frontmostApplication?.bundleIdentifier == clickedBundleId) && !targetApp.isHidden
-                        let action = isAlreadyActive ? "toggle" : "activate"
-                        
                         if isExpired() {
                             semaphore.signal()
                             return
                         }
-                        
-                        NotificationCenter.default.post(
-                            name: NSNotification.Name("DockIconClicked"),
-                            object: nil,
-                            userInfo: ["bundleId": clickedBundleId, "action": action]
-                        )
                         
                         DispatchQueue.main.async { 
                             if action == "toggle" {
@@ -335,6 +352,8 @@ class DockEventMonitor {
         let waitResult = semaphore.wait(timeout: .now() + 0.01)
         if waitResult == .timedOut {
             // 系统响应太慢（说明正在处理权限或忙碌），为了保命，这里直接放行所有点击事件。
+            // ⭐️ 注意：即使超时，DockIconClicked 通知可能已经发出（如果在超时前到达了通知发送行），
+            // 指示条会正确预测状态。如果通知还没来得及发出（极端情况），则下次悬停时 syncFocusState 会纠正。
             timeoutLock.lock()
             didTimeout = true
             timeoutLock.unlock()

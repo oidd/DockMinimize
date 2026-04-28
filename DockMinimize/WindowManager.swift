@@ -100,6 +100,10 @@ class WindowManager {
         // 只有 App 已经是前台活跃时，点击才是 "Toggle" 意图。
         
         // ⭐️ 极致性能优化：先获取窗口数量
+        let windows = WindowThumbnailService.shared.getWindows(
+            for: bundleId,
+            respectDockExclusions: source.respectsDockExclusions
+        )
         let windowCount = windows.count
         
         // 防止连击 (Debounce)，所有应用均需遵循（除 Finder 外）
