@@ -97,10 +97,24 @@ class SettingsManager: ObservableObject {
     
     /// 当开启时，显示大图预览（原位/原尺寸）。当关闭时，不显示大图。
     @Published var enableOriginalPreview: Bool {
-        didSet { UserDefaults.standard.set(enableOriginalPreview, forKey: "enableOriginalPreview") }
+        didSet {
+            UserDefaults.standard.set(enableOriginalPreview, forKey: "enableOriginalPreview")
+            // ⭐️ 联动：原位预览关闭时，「聚焦预览」必须自动关闭（依赖关系）
+            if !enableOriginalPreview && enableFocusPreview {
+                enableFocusPreview = false
+            }
+        }
     }
+
+    /// 「聚焦预览」(Focus Preview)：在显示原位预览时，对桌面其他区域加毛玻璃，
+    /// 让用户的视觉聚焦到截图上。依赖 enableOriginalPreview = true 才能开启。
+    @Published var enableFocusPreview: Bool {
+        didSet { UserDefaults.standard.set(enableFocusPreview, forKey: "enableFocusPreview") }
+    }
+
     
     @Published var blacklistedBundleIDs: [String] {
+
         didSet {
             defaults.set(blacklistedBundleIDs, forKey: kBlacklistedBundleIDs)
             NotificationCenter.default.post(name: .blacklistChanged, object: nil)
@@ -178,8 +192,14 @@ class SettingsManager: ObservableObject {
         }
         
         self.enableOriginalPreview = defaults.object(forKey: "enableOriginalPreview") as? Bool ?? true
+
+        // 加载「聚焦预览」设置（默认关闭，用户自行开启；
+        // 且必须在「原位预览」开启的前提下才能生效——见 didSet 联动）
+        self.enableFocusPreview = defaults.object(forKey: "enableFocusPreview") as? Bool ?? false
         
         // 加载悬停预览设置（默认开启）
+
+
         if defaults.object(forKey: kHoverPreviewEnabled) == nil {
             defaults.set(true, forKey: kHoverPreviewEnabled)
         }

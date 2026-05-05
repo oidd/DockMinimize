@@ -124,19 +124,33 @@ class PreviewStateManager {
         let frontmostApp = NSWorkspace.shared.frontmostApplication
         guard frontmostApp?.bundleIdentifier == bundleId else {
             log.log("📱 App \(bundleId) is in background (Frontmost: \(frontmostApp?.bundleIdentifier ?? "none")). All indicators will be 50% opacity.")
+            // ⭐️ Bug 修复：App 在后台时，必须清掉 lastFocusedWindowId / lastActivatedWindowId 这些 stale 状态。
+            //    否则 clickThumbnail 的「轨道 2」会用陈旧的 lastFocusedWindowId 误判 → 错误执行 Minimize。
+            //    正确语义：只要目标 App 不是前台，它就不存在「当前焦点窗口」概念，必须清空。
+            self.lastFocusedWindowId = nil
+            self.lastActivatedWindowId = nil
             return
         }
+
         
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         var focusedWindow: AnyObject?
         let result = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focusedWindow)
         
         if result == .success, let focusedElement = focusedWindow {
-            var focusedWindowId: CGWindowID = 0
-            if _AXUIElementGetWindow(focusedElement as! AXUIElement, &focusedWindowId) == .success {
-                self.lastFocusedWindowId = focusedWindowId
-                self.activeWindowIds = [focusedWindowId]
-                log.log("🎯 Synced focus state: Window \(focusedWindowId) is top-level focus.")
+            // ⭐️ 防御性修复：用 CFGetTypeID 验证 + unsafeBitCast 转型，
+            // 避免在某些极端情况下（焦点对象不是 AXUIElement）触发 SIGABRT 的 force cast 崩溃。
+            // (AXUIElement 是 CoreFoundation 类型，Swift 的 as? 对它无法做实际类型检查、永远成功)
+            if CFGetTypeID(focusedElement) == AXUIElementGetTypeID() {
+                let element = unsafeBitCast(focusedElement, to: AXUIElement.self)
+                var focusedWindowId: CGWindowID = 0
+                if _AXUIElementGetWindow(element, &focusedWindowId) == .success {
+                    self.lastFocusedWindowId = focusedWindowId
+                    self.activeWindowIds = [focusedWindowId]
+                    log.log("🎯 Synced focus state: Window \(focusedWindowId) is top-level focus.")
+                }
+            } else {
+                log.log("⚠️ syncFocusState: focusedWindow is not an AXUIElement, skipping")
             }
         }
     }
@@ -237,52 +251,91 @@ class PreviewStateManager {
         
         var shouldMinimize = false
         
-        // --- 判定前台状态 (放宽判定条件) ---
-        // 只要前台是：目标 App、或者是 Dock、或者是我自己，就认为可以执行焦点检查
-        let frontBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let isTargetApp = frontBundleId == currentAppBundleId
-        let isDock = frontBundleId == "com.apple.dock"
-        let isSelf = frontBundleId == Bundle.main.bundleIdentifier
-        
-        if isTargetApp || isDock || isSelf {
+        // ⭐️ Bug④ 修复：Finder 必须走「二态判定」短路，跳过下面的四轨道。
+        // 原因：Finder 桌面窗口永远 Main=true、frontmost 经常不是 Finder，
+        // 老逻辑会把蓝色（已展开在桌面）的窗口误判成「该最小化」。
+        // 见 FinderSpecialHandler.swift 头部 Invariant I2。
+        if FinderSpecialHandler.handles(currentAppBundleId) {
+            shouldMinimize = FinderSpecialHandler.shouldMinimizeOnClick(
+                window: windowInfo,
+                lastActivatedWindowId: lastActivatedWindowId
+            )
+            log.log("✅ [Finder] Click decision: shouldMinimize=\(shouldMinimize) (isMinimized=\(windowInfo.isMinimized), lastActivated=\(String(describing: lastActivatedWindowId)))")
+        } else {
+            // ⭐️ 顺序重构（修复「点击桌面上显示的窗口反被隐藏」+「点完第二次仍 raise」连环回归）：
+            //
+            // 新优先级顺序：
+            //   轨道 1（最强信任）：lastActivatedWindowId == windowId
+            //     —— 我们刚才点过这个窗口、它必在最前 → 直接 Minimize。
+            //     不依赖 frontmost/isActive，避免 hover 时 frontmost 漂移到 Dock/我们自己导致误判。
+            //
+            //   Activate-only path（轨道 1 未命中时的「后台 App 兜底」）：
+            //     如果目标 App 不是 frontmost 且 .isActive==false，那么它内部的 stale
+            //     lastFocusedWindowId/kAXMain/kAXFocused 都不能信，必然走 Activate。
+            //
+            //   轨道 2/3（兜底）：目标 App 是前台 → 用 lastFocusedWindowId/AX 实时判定。
             
-            // --- 智能多路状态判定 (不依赖定时器) ---
-            
-            // 轨道 1：内存置顶记录 (最强信任)
-            // 只要我们刚才点过它，且中途没换过 App，无论等多久，它必然在最前面
+            // 轨道 1：内存置顶记录（最强信任）
+            // 只要我们刚才点过它，且中途没换过 App，无论现在 frontmost 是谁，它必然在最前面 → Minimize
             if lastActivatedWindowId == windowId {
                 shouldMinimize = true
                 log.log("✅ Match: Memory persist (last activated). Action: Minimize.")
-            } 
-            // 轨道 2：系统查询记录
-            else if lastFocusedWindowId == windowId {
-                shouldMinimize = true
-                log.log("✅ Match: AX focus sync. Action: Minimize.")
-            }
-            // 轨道 3：实时补位检测 (应对用户手动点击窗口的情况)
-            else {
-                var focusedWindow: AnyObject?
-                if AXUIElementCopyAttributeValue(windowInfo.appAxElement, kAXFocusedWindowAttribute as CFString, &focusedWindow) == .success,
-                   let focusedElement = focusedWindow {
-                    var focusedId: CGWindowID = 0
-                    if _AXUIElementGetWindow(focusedElement as! AXUIElement, &focusedId) == .success && focusedId == windowId {
-                        shouldMinimize = true
-                        log.log("✅ Match: Real-time AX sync. Action: Minimize.")
-                    }
-                }
+            } else {
+                // 判定目标 App 是否实际在前台（任一条件满足即可）：
+                //   - frontmost == 目标 App
+                //   - NSRunningApplication.isActive == true（更稳，覆盖 frontmost 漂移到 Dock/我们的瞬态）
+                let targetApp = NSRunningApplication(processIdentifier: windowInfo.ownerPID)
+                let targetAppIsFront =
+                    NSWorkspace.shared.frontmostApplication?.bundleIdentifier == currentAppBundleId ||
+                    targetApp?.isActive == true
                 
-                if !shouldMinimize {
-                    var isMain: CFTypeRef?
-                    if AXUIElementCopyAttributeValue(windowInfo.axElement, kAXMainAttribute as CFString, &isMain) == .success,
-                       let mainValue = isMain as? Bool, mainValue == true {
+                if !targetAppIsFront {
+                    // Activate-only 兜底：目标 App 在后台时（半透明蓝指示条），意图必为 Activate。
+                    // 这条路径解决了「lastFocusedWindowId/AX 在后台 App 上保留 stale 状态导致误最小化」的回归。
+                    log.log("📱 Target app not active (Activate-only path).")
+                    shouldMinimize = false
+                } else {
+                    // 目标 App 在前台 → 走原始的轨道 2/3 兜底
+                    let frontBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                    
+                    // 轨道 2：系统查询记录
+                    if lastFocusedWindowId == windowId {
                         shouldMinimize = true
-                        log.log("✅ Match: Window MainAttribute. Action: Minimize.")
+                        log.log("✅ Match: AX focus sync. Action: Minimize.")
+                    }
+                    // 轨道 3：实时补位检测（应对用户手动点击窗口的情况）
+                    else {
+                        var focusedWindow: AnyObject?
+                        if AXUIElementCopyAttributeValue(windowInfo.appAxElement, kAXFocusedWindowAttribute as CFString, &focusedWindow) == .success,
+                           let focusedElement = focusedWindow,
+                           CFGetTypeID(focusedElement) == AXUIElementGetTypeID() {
+                            // ⭐️ 防御性：用 CFGetTypeID 验证 + unsafeBitCast，避免 force cast 崩溃
+                            let element = unsafeBitCast(focusedElement, to: AXUIElement.self)
+                            var focusedId: CGWindowID = 0
+                            if _AXUIElementGetWindow(element, &focusedId) == .success && focusedId == windowId {
+                                shouldMinimize = true
+                                log.log("✅ Match: Real-time AX sync. Action: Minimize.")
+                            }
+                        }
+                        
+                        if !shouldMinimize {
+                            var isMain: CFTypeRef?
+                            if AXUIElementCopyAttributeValue(windowInfo.axElement, kAXMainAttribute as CFString, &isMain) == .success,
+                               let mainValue = isMain as? Bool, mainValue == true {
+                                shouldMinimize = true
+                                log.log("✅ Match: Window MainAttribute. Action: Minimize.")
+                            }
+                        }
+                        
+                        if !shouldMinimize {
+                            log.log("📱 App front but no track matched (front=\(frontBundleId ?? "none")). Action: Activate.")
+                        }
                     }
                 }
             }
-        } else {
-            log.log("📱 App not front (Current: \(frontBundleId ?? "none")). Action: Activate.")
         }
+
+
         
         // ⭐️ 修复 "隐藏下的死循环" (Click Deadlock Fix)
         // 用户反馈：第一次点击显示成功，第二次点击隐藏成功，第三次点击（想显示）时，
@@ -478,6 +531,38 @@ class PreviewStateManager {
     private func activateWindow(windowInfo: WindowThumbnailService.WindowInfo) {
         let windowId = windowInfo.windowId
         
+        // ⭐️ Bug② 修复（二轮加强版）：
+        // 用户反馈：仅 NSApp.deactivate() 不够 —— 设置面板还是会被弹到最前。
+        // 根因：app.activate(.activateIgnoringOtherApps) 会让系统在切到目标 App 前
+        // 把调用方（DockMinimize）所有 normal level 的窗口顺手 orderFront 一遍。
+        // NSApp.deactivate() 只把"App 焦点"释放了，并没有把窗口降序。
+        //
+        // 真正可靠的做法：在抢焦点之前，把所有自己的 normal level 可见窗口
+        // **临时降级到 .floating - 1**（一个不会被系统抬起的低 level），
+        // 等 1.5s 后再恢复回 .normal。这样系统找不到它们去 orderFront，
+        // 它们就乖乖留在原 Z-order 上。
+        //
+        // 注意：1.5s 只是 macOS 切 App 的窗口浮起动作的时间窗，过后恢复完全无视觉差异。
+        let demotedWindows: [(NSWindow, NSWindow.Level)] = self.demoteOwnNormalWindows()
+        if !demotedWindows.isEmpty {
+            log.log("🔇 Bug② fix: demoted \(demotedWindows.count) own window(s) below normal before activate target.")
+            // 1.5s 后恢复 level
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self = self else { return }
+                for (window, originalLevel) in demotedWindows {
+                    window.level = originalLevel
+                }
+                self.log.log("🔊 Bug② fix: restored \(demotedWindows.count) own window level(s).")
+            }
+        }
+        
+        // ⭐️ Bug① 缓解：Finder 走轻量激活序列，避免给 Finder 主循环密集推 7 个状态变更
+        // 详见 FinderSpecialHandler.swift 头部 Invariant I1
+        if FinderSpecialHandler.handles(currentAppBundleId) {
+            FinderSpecialHandler.activateWindow(windowInfo, log: log)
+            return
+        }
+        
         // 1. 基础唤醒：无论什么情况，先尝试解除隐藏和激活应用
         // 这对于 "Hide" 模式的应用是必须的，同时对普通应用也没有副作用
         if let app = NSRunningApplication(processIdentifier: windowInfo.ownerPID) {
@@ -523,6 +608,39 @@ class PreviewStateManager {
         log.log("✅ Activated window \(windowId) using axElement")
     }
     
+    /// 检查 DockMinimize 自己是否存在 normal level 的可见窗口（如设置面板）。
+    /// 用于 Bug② 修复：决定是否需要在 activateWindow 前调用 NSApp.deactivate()。
+    /// 排除 popUpMenu / floating 等高 level 的预览窗口（它们不会被 macOS 顺势抬起）。
+    private func hasVisibleNormalLevelWindow() -> Bool {
+        for window in NSApp.windows {
+            guard window.isVisible else { continue }
+            // 只关心 .normal level 的窗口（设置面板就是这个 level）
+            if window.level == .normal {
+                return true
+            }
+        }
+        return false
+    }
+    
+    /// Bug② 修复辅助：把所有自己 .normal level 的可见窗口临时降级，
+    /// 防止下面 app.activate(.activateIgnoringOtherApps) 让系统顺手 orderFront 它们。
+    /// 返回 [(window, originalLevel)]，调用方负责在合适时机恢复。
+    ///
+    /// 降级目标：用 .init(rawValue: NSWindow.Level.normal.rawValue - 100)，
+    /// 这是一个比 .normal 低、但仍在所有桌面壁纸/Dock 窗口之上的 level。
+    /// 视觉上完全等同于 .normal（依然在桌面之上），系统在切 App 时不会拉它们。
+    private func demoteOwnNormalWindows() -> [(NSWindow, NSWindow.Level)] {
+        var result: [(NSWindow, NSWindow.Level)] = []
+        let demotedLevel = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 100)
+        for window in NSApp.windows {
+            guard window.isVisible else { continue }
+            guard window.level == .normal else { continue }
+            result.append((window, window.level))
+            window.level = demotedLevel
+        }
+        return result
+    }
+    
     /// 最小化窗口（收回）- 使用保存的 axElement 直接操作
     private func minimizeWindow(windowInfo: WindowThumbnailService.WindowInfo) {
         let windowId = windowInfo.windowId
@@ -531,8 +649,9 @@ class PreviewStateManager {
         let appBundleId = currentAppBundleId ?? ""
         let allWindows = WindowThumbnailService.shared.getWindows(for: appBundleId)
         
-        // Finder 特殊处理：即使是单窗口，也绝不隐藏应用，而是最小化窗口
-        if appBundleId == "com.apple.finder" {
+        // Finder 特殊处理（I1）：即使是单窗口，也绝不隐藏应用，而是最小化窗口。
+        // 因为 Finder 的桌面也是它的窗口，hide 会让桌面消失。详见 FinderSpecialHandler。
+        if FinderSpecialHandler.handles(appBundleId) {
             // 继续执行下面的 AX 最小化逻辑
         } else if allWindows.count <= 1 {
              if let app = NSRunningApplication(processIdentifier: windowInfo.ownerPID) {

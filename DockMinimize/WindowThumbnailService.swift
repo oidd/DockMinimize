@@ -26,6 +26,29 @@ class WindowThumbnailService {
         let captureTime: Date
     }
     
+    // ⭐️ 多桌面（Spaces）修复 v2：合法 windowId 白名单缓存
+    //
+    // 背景：
+    //   切到非主 Space 时，AX (kAXWindowsAttribute) 会返回 -25211 (cannot complete)，
+    //   完全拿不到该 App 的任何 AX 窗口，于是无法用 AX 过滤掉"非标准窗口"
+    //   （如微信 280×380 的搜索浮窗、各类小组件等）。CG 单独不可靠，
+    //   会把这些浮窗也当成可预览窗口，导致出现额外的空白预览小窗。
+    //
+    // 解法：
+    //   每当我们处于"AX 还能用"的状态（主桌面、且 AX 返回非空列表），
+    //   就把这一刻 AX 校验通过的 windowId 集合按 bundleId 缓存下来。
+    //   等到跨 Space、AX 失效时，**严格** 只放行白名单里的 windowId，
+    //   其余 CG 窗口一律丢弃 —— 这样两个桌面看到的窗口数量/集合完全一致。
+    //
+    // 缓存条目本身没有设过期：白名单只会被新一次成功的 AX 查询覆盖，
+    //   App 退出 / 我们进程重启时自然清掉。
+    private struct AXWindowAllowlist {
+        let windowIds: Set<CGWindowID>
+        let updatedAt: Date
+    }
+    private var axAllowlist: [String: AXWindowAllowlist] = [:]   // key: bundleId
+    private let axAllowlistQueue = DispatchQueue(label: "com.dockminimize.axAllowlist")
+    
     private init() {}
     
     /// 窗口信息结构（保存 AXUIElement 避免重复查找 - 参考 DockDoor 实现）
@@ -79,8 +102,22 @@ class WindowThumbnailService {
         // 首先通过 AXUIElement 获取有效窗口列表（核心过滤）
         let validAXWindows = getValidAXWindows(for: pid)
         
-        if validAXWindows.isEmpty {
+        // ⭐️ 多桌面修复 v2：维护 / 读取 AX 窗口白名单
+        //  - AX 拿得到 → 用本次结果**覆盖更新**白名单（最权威）
+        //  - AX 拿不到 → 读取上次缓存的白名单作为兜底过滤依据
+        let axAllowlistSnapshot: Set<CGWindowID>?
+        if !validAXWindows.isEmpty {
+            let ids = Set(validAXWindows.map { $0.windowId })
+            axAllowlistQueue.sync {
+                axAllowlist[bundleId] = AXWindowAllowlist(windowIds: ids, updatedAt: Date())
+            }
+            axAllowlistSnapshot = ids
+        } else {
             log.log("ℹ️ No valid AX windows for \(bundleId). Falling back to CGWindowList only.")
+            axAllowlistSnapshot = axAllowlistQueue.sync { axAllowlist[bundleId]?.windowIds }
+            if let snap = axAllowlistSnapshot {
+                log.log("🛡️ Using cached AX allowlist for \(bundleId): \(snap.count) ids → \(snap.sorted())")
+            }
         }
         
         // 获取 CG 窗口列表用于匹配
@@ -115,33 +152,96 @@ class WindowThumbnailService {
             if let layer = windowInfo[kCGWindowLayer as String] as? Int, layer != 0 { continue }
             if let alpha = windowInfo[kCGWindowAlpha as String] as? CGFloat, alpha < 0.1 { continue }
             
+            // ⭐️ Zombie 窗口过滤（关键根因修复）：
+            //   症状：WPS / 微信 / 移动云盘 / QQ 音乐更新提示 等 App 用一段时间后，
+            //   预览小窗里出现一堆「黑屏 + 同名（如『首页』）+ 显示为已最小化」的鬼影窗口。
+            //
+            //   根因：这些 App 关闭某个内部窗口后，没有及时释放对应的 AXUIElement，
+            //   导致 AX 枚举（kAXWindowsAttribute）依然能拿到「亡魂」，CGWindowList 也
+            //   还残留这条记录，于是穿透了我们之前所有过滤层（尺寸/role/subrole/title/AX 匹配）。
+            //
+            //   过滤指标：kCGWindowSharingState
+            //     - 0 (.none)      → 系统已停止把该窗口内容共享给其他进程 = zombie
+            //     - 1 (.readOnly)  → 正常窗口（最小化窗口仍保留 readOnly 用作 Dock 缩略图）
+            //     - 2 (.readWrite) → 正常窗口
+            //   真实最小化窗口至少是 readOnly（系统要 keep 窗口的 last frame 给 Dock 用），
+            //   而 zombie 窗口的 sharingState 一定是 0。这条过滤不会误伤任何真实窗口。
+            if let sharingState = windowInfo[kCGWindowSharingState as String] as? Int,
+               sharingState == 0 {
+                // 静默丢弃（出现频率高，避免日志刷屏）
+                continue
+            }
+
+            
             let isOnScreen = windowInfo[kCGWindowIsOnscreen as String] as? Bool ?? false
             
             let bounds = CGRect(x: x, y: y, width: width, height: height)
             
             let matchedAXWindow = matchAXWindow(windowId: windowId, bounds: bounds, in: validAXWindows)
             
-            // --- 核心优化 (DockDoor 逻辑) ---
+            let title = windowInfo[kCGWindowName as String] as? String ?? ""
+            let ownerName = windowInfo[kCGWindowOwnerName as String] as? String ?? ""
             
-            // 1. 如果辅助功能 (AX) 报告了有效窗口列表...
+            let isMinimized = (matchedAXWindow?.isMinimized ?? false) || app.isHidden
+            
+            // --- 核心优化 (DockDoor 逻辑 + 多桌面 Spaces 修复) ---
+            //
+            // ⭐️ 多桌面修复的核心思路：
+            //   当用户切到非主 Space 后，原本「在另一个 Space 的合法窗口」会出现：
+            //     - CGWindowList: isOnScreen == false（系统不把它列为当前屏幕可见）
+            //     - AX:           kAXWindowsAttribute 通常拿不到 → matchedAXWindow == nil
+            //   旧逻辑会把这种窗口当"幽灵窗口"全部丢弃 → 第二桌面 hover 大量 App 没预览。
+            //
+            //   但是「更新弹窗 / 小组件 / 隐形窗口」也可能符合 isOnScreen==false 这个特征，
+            //   所以必须用 AX 来辅助甄别合法性，单看 CG 标志会误放一大堆垃圾窗口。
+            //
+            //   收紧后的判定：
+            //     - 当 AX **能** 拿到窗口列表（validAXWindows 非空）：
+            //         必须 matchedAXWindow != nil，否则一律丢弃（彻底挡住小组件/弹窗）。
+            //     - 当 AX **完全** 拿不到窗口列表（validAXWindows 为空，老旧应用 / 当前 Space 无窗口）：
+            //         CG 兜底必须满足：layer==0 + alpha≥0.1 + 尺寸 ≥ 200×200 + 有非空 title，
+            //         以最大可能挡住 sheet/popover/widget。
+            //
+            //   isOffCurrentSpace 现在只描述"窗口位置不在当前 Space"这一物理特征，不直接决定放行；
+            //   放行决策完全由 AX/CG 兜底逻辑负责。
+            
+            // 1. 当 AX 报告了有效窗口列表，但这个 CG 窗口没匹配到任何 AX 窗口 → 一律丢弃。
+            //    （这里不再为跨 Space 开例外：因为如果 AX 拿得到列表，说明 AX 知道这个 App
+            //     在当前 Space 有窗口；那些跨 Space 窗口在 AX 里就是查不到的，本来也不该放。
+            //     真正需要放跨 Space 的场景，会走到下面 validAXWindows.isEmpty 那个分支。）
             if !validAXWindows.isEmpty && matchedAXWindow == nil {
                 continue
             }
             
-            let isMinimized = (matchedAXWindow?.isMinimized ?? false) || app.isHidden
-            
-            // 2. 幽灵窗口过滤：如果不在屏幕上，且没有最小化，且应用没有被隐藏，视为无效（过滤 QSpace/Finder 幽灵窗口）
-            // 修正：如果 App 处于 Hidden 状态 (Cmd+H)，它的窗口自然不在屏幕上，必须保留，否则预览图会消失。
-            if !isOnScreen && !isMinimized && !app.isHidden {
-                 continue
-            }
-
-            // 3. 老旧应用兜底
-            let title = windowInfo[kCGWindowName as String] as? String ?? ""
-            let ownerName = windowInfo[kCGWindowOwnerName as String] as? String ?? ""
-            
+            // 2. AX 兜底：当 AX 拿不到任何窗口（典型场景：跨 Space 时整个 App 在当前 Space 没窗口），
+            //    走纯 CG 路径。
+            //
+            //    ⭐️ 多桌面修复 v2 的关键：优先用「上次 AX 留下来的白名单」做精准过滤。
+            //      白名单存在 → 严格只放行白名单里的 windowId，
+            //                 这样跨 Space 看到的窗口集合 = 上次主桌面 AX 看到的集合，
+            //                 完美避免微信浮窗 / 小组件等被误放。
+            //      白名单为空（首次启动就在非 App 所在 Space 等极端情况）→
+            //                 退化为旧的尺寸/标题启发式，仍能给用户一个"差不多对"的预览，
+            //                 等用户回到主桌面让 AX 跑过一次，下次就准了。
             if validAXWindows.isEmpty {
-                 if title.isEmpty { continue }
+                if let allowlist = axAllowlistSnapshot {
+                    if !allowlist.contains(windowId) {
+                        continue
+                    }
+                    // 命中白名单 → 直接放行，不再做尺寸/标题启发式判断
+                } else {
+                    // 启发式兜底（仅在从未拿到过 AX 列表时使用）
+                    if title.isEmpty { continue }
+                    if width < 200 || height < 200 { continue }
+                }
+            }
+            
+            // 3. 幽灵窗口过滤：到这里还没被剔除的窗口，要么 AX 通过了（matchedAXWindow != nil），
+            //    要么走的是 AX 空 + CG 严格兜底（已经过 step 2 校验）。
+            //    剩下唯一要挡的是 isOnScreen==false && !isMinimized && !app.isHidden 且
+            //    AX 也匹配不上的"幽灵态"——但这种已经在 step 1 被挡掉了，这里保留一道兜底。
+            if !isOnScreen && !isMinimized && !app.isHidden && matchedAXWindow == nil && !validAXWindows.isEmpty {
+                 continue
             }
             
             // (Removed redundant 40px/50px check since we have global 100px check above)

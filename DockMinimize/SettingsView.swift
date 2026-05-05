@@ -53,16 +53,9 @@ struct SettingsView: View {
     var body: some View {
         if #available(macOS 13.0, *) {
             NavigationSplitView {
-                List {
-                    ForEach(SettingsTab.allCases, id: \.self) { tab in
-                        SidebarRow(tab: tab, selectedTab: $selectedTab, t: t)
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                    }
-                }
-                .listStyle(.sidebar)
-                .navigationTitle("Dock Minimize")
-                .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 220)
+                SidebarListView(selectedTab: $selectedTab, t: t)
+                    .navigationTitle("Dock Minimize")
+                    .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 220)
             } detail: {
                 contentView
                     .background(Color(NSColor.windowBackgroundColor))
@@ -521,9 +514,26 @@ private func toggleRow(icon: String? = nil, title: String, isOn: Binding<Bool>) 
                     )
                     .disabled(!settingsManager.enableIndependentWindowControl)
                     .opacity(settingsManager.enableIndependentWindowControl ? 1.0 : 0.5)
+
+                    Divider().padding(.leading, 12)
+
+                    // 「聚焦预览」(Focus Preview)：依赖「原位预览」开启
+                    // - 仅在「原位预览」打开时才可用
+                    // - 「原位预览」关闭时，开关本身会被 SettingsManager 自动联动关闭并禁用
+                    toggleRowWithDesc(
+                        title: t("聚焦预览", "Focus Preview"),
+                        desc: t("显示原位预览时，将桌面其余区域模糊化以突出预览。",
+                                "Blur the rest of the desktop while showing the original preview."),
+                        isOn: $settingsManager.enableFocusPreview
+                    )
+                    .disabled(!settingsManager.enableIndependentWindowControl
+                              || !settingsManager.enableOriginalPreview)
+                    .opacity((settingsManager.enableIndependentWindowControl
+                              && settingsManager.enableOriginalPreview) ? 1.0 : 0.5)
                 }
                 .padding(.vertical, 4)
             }
+
             
             if settingsManager.enableOriginalPreview {
                 HStack(alignment: .top, spacing: 12) {
@@ -547,6 +557,8 @@ private func toggleRow(icon: String? = nil, title: String, isOn: Binding<Bool>) 
         }
     }
 }
+
+
 
 private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>) -> some View {
     HStack {
@@ -942,62 +954,214 @@ private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>)
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.3"
     }
     
-    // MARK: - Sidebar Row View
-    private struct SidebarRow: View {
-        let tab: SettingsTab
-        @Binding var selectedTab: SettingsTab
-        let t: (String, String) -> String
-        @State private var isHovered = false
-        
-        var isSelected: Bool {
-            selectedTab == tab
+}
+
+
+// MARK: - 侧边栏图标（外部 SVG 资源）
+
+/// SVG 图标位于 Resources/SidebarIcons/ 目录下，本身是白色填充的单色图标。
+/// 加载后通过 `template` 属性让 SwiftUI 的 `.foregroundColor` 接管染色，
+/// 从而实现选中态变为 accentColor、未选中变为 secondary 等动态着色。
+private struct SidebarTabIcon: View {
+    let tab: SettingsView.SettingsTab
+    let isSelected: Bool
+
+    private var resourceName: String {
+        switch tab {
+        case .permissions:        return "permissions"
+        case .general:            return "general"
+        case .smallWindowPreview: return "preview"
+        case .hotkeys:            return "hotkey"
+        case .blacklist:          return "blacklist"
+        case .about:              return "about"
         }
-        
-        var body: some View {
-            HStack(spacing: 12) {
-                if tab == .smallWindowPreview {
-                    // 自定义绘制一个小窗预览图标，避免实心块过重
-                    ZStack(alignment: .bottomTrailing) {
-                        RoundedRectangle(cornerRadius: 3.5)
-                            .fill(isSelected ? Color.white : Color.accentColor)
-                            .frame(width: 17, height: 13)
-                        
-                        // 象征预览的小框，使用背景色造成“透射”效果
-                        RoundedRectangle(cornerRadius: 1.5)
-                            .fill(isSelected ? Color.accentColor : Color.white)
-                            .frame(width: 7, height: 5)
-                            .padding(1.5)
-                    }
-                    .frame(width: 24, alignment: .center)
-                } else {
-                    Image(systemName: tab.iconName())
-                        .imageScale(.medium)
-                        .font(.system(size: 17))
-                        .symbolRenderingMode(.monochrome)
-                        .frame(width: 24, alignment: .center)
-                        .foregroundColor(isSelected ? .white : .accentColor)
+    }
+
+    private var loadedImage: NSImage? {
+        // 优先从 Resources/SidebarIcons 目录读取（folder reference 形式被打包到 bundle 根）
+        let candidates: [URL?] = [
+            Bundle.main.url(forResource: resourceName, withExtension: "svg", subdirectory: "SidebarIcons"),
+            Bundle.main.url(forResource: resourceName, withExtension: "svg")
+        ]
+        for case let url? in candidates {
+            if let img = NSImage(contentsOf: url) {
+                img.isTemplate = true   // 让外部 .foregroundColor 接管颜色
+                return img
+            }
+        }
+        return nil
+    }
+
+    var body: some View {
+        Group {
+            if let img = loadedImage {
+                Image(nsImage: img)
+                    .resizable()
+                    .renderingMode(.template)
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                // 兜底：万一 SVG 没找到，用 SF Symbol 占位
+                Image(systemName: "questionmark.circle")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            }
+        }
+        .frame(width: 18, height: 18)
+    }
+}
+
+
+// MARK: - 全新 Sidebar：左侧滑动竖条 + 半透明展开背景
+
+private struct SidebarListView: View {
+    @Binding var selectedTab: SettingsView.SettingsTab
+    let t: (String, String) -> String
+
+    @Namespace private var indicatorNamespace
+
+    var body: some View {
+        // 关掉 List 自带的选中高亮，用纯 VStack + ZStack 控制
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 4) {
+                ForEach(SettingsView.SettingsTab.allCases, id: \.self) { tab in
+                    SidebarRow(
+                        tab: tab,
+                        selectedTab: $selectedTab,
+                        indicatorNamespace: indicatorNamespace,
+                        t: t
+                    )
                 }
-                
-                Text(tab == .smallWindowPreview ? t("小窗预览", "Preview") : tab.displayName(t: t))
-                    .font(.system(size: 14, weight: isSelected ? .medium : .regular))
-                    .foregroundColor(isSelected ? .white : .primary)
-                
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
+        }
+        .background(.clear)
+    }
+}
+
+private struct SidebarRow: View {
+    let tab: SettingsView.SettingsTab
+    @Binding var selectedTab: SettingsView.SettingsTab
+    let indicatorNamespace: Namespace.ID
+    let t: (String, String) -> String
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isHovered = false
+    /// 展开背景的进度：0 → 1，从左向右铺开
+    @State private var bgProgress: CGFloat = 0
+
+    private var isSelected: Bool { selectedTab == tab }
+
+    private var displayText: String {
+        tab == .smallWindowPreview
+            ? t("小窗预览", "Preview")
+            : tab.displayName(t: t)
+    }
+
+    private var backgroundFill: Color {
+        // 暗色模式略提亮一点
+        Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.15)
+    }
+
+    private var iconColor: Color {
+        if isSelected { return .accentColor }
+        return isHovered ? .primary.opacity(0.85) : .secondary
+    }
+
+    private var textColor: Color {
+        if isSelected { return .accentColor }
+        return .primary
+    }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            // —— 第一层：左侧竖条（只在选中行渲染，靠 matchedGeometryEffect 在不同行之间滑动）
+            //   高度与右侧蓝色背景胶囊保持一致 —— 都是行高 36 - 上下各 0pt
+            HStack(spacing: 0) {
+                if isSelected {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: 3)
+                        .frame(maxHeight: .infinity)
+                        .matchedGeometryEffect(id: "sidebar.indicator", in: indicatorNamespace)
+                } else {
+                    Spacer().frame(width: 3)
+                }
                 Spacer()
             }
-            .padding(.horizontal, 10)
+            .padding(.leading, 4)
+
+            // —— 第二层：从左向右展开的半透明蓝色底色
+            //     用 GeometryReader 精确控制宽度（而不是 scaleEffect，避免圆角形变）
+            GeometryReader { geo in
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? backgroundFill : Color.clear)
+                    .frame(width: geo.size.width * bgProgress,
+                           height: geo.size.height,
+                           alignment: .leading)
+            }
+            .padding(.leading, 12)   // 给竖条让出空间
+            .padding(.trailing, 4)
+
+            // —— 第三层：图标 + 文字
+            HStack(spacing: 11) {
+                SidebarTabIcon(tab: tab, isSelected: isSelected)
+                    .foregroundColor(iconColor)
+                    .frame(width: 22, alignment: .center)
+
+                Text(displayText)
+                    .font(.system(size: 13.5,
+                                  weight: isSelected ? .semibold : .regular))
+                    .foregroundColor(textColor)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 22)   // 12 (背景起点) + 10 (背景内左 padding)
+            .padding(.trailing, 12)
             .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isSelected ? Color.accentColor : (isHovered ? Color.primary.opacity(0.05) : Color.clear))
-            )
-            .contentShape(Rectangle())
-            .onHover { hovering in
+        }
+        .frame(height: 36)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
                 isHovered = hovering
             }
-            .onTapGesture {
+        }
+        .onTapGesture {
+            guard !isSelected else { return }
+            // 选中切换：竖条用 spring，背景用 easeOut
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
                 selectedTab = tab
             }
         }
+        // 监听选中状态变化，驱动背景从左向右展开 / 直接淡出
+        .onChange(of: isSelected) { newValue in
+            if newValue {
+                bgProgress = 0
+                withAnimation(.easeOut(duration: 0.32)) {
+                    bgProgress = 1
+                }
+            } else {
+                // 旧选中行：直接淡出，不收回
+                withAnimation(.easeIn(duration: 0.12)) {
+                    bgProgress = 0
+                }
+            }
+        }
+        .onAppear {
+            // 初始进入页面时，让默认选中那一项也展示出底色（无动画，避免开屏抖动）
+            bgProgress = isSelected ? 1 : 0
+        }
+        // 让 hover 也有一点点反馈（非选中行）
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isHovered && !isSelected ? Color.primary.opacity(0.05) : Color.clear)
+                .padding(.leading, 12)
+                .padding(.trailing, 4)
+        )
     }
 }
 

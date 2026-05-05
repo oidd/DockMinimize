@@ -45,6 +45,10 @@ class PreviewBarController: NSObject {
     // 隐藏去抖动任务
     private var unpeekWorkItem: DispatchWorkItem?
     
+    // ⭐️ 大图预览的最长存活定时器（兜底，防止任何异常时序下大图遗留在桌面）
+    private var largePreviewWatchdog: DispatchWorkItem?
+    private let largePreviewMaxLifetime: TimeInterval = 5.0
+    
     private override init() {
         super.init()
         
@@ -56,11 +60,25 @@ class PreviewBarController: NSObject {
             self?.stateManager.hidePreview()
         }
         
+        // ⭐️ 多桌面（Spaces）修复：切换 Space 时主动清场，避免预览小窗带着旧 Space 的坐标
+        // 残留在新 Space 上（或因 Space 归属错乱而完全不显示）
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            if self.stateManager.currentState != .hidden {
+                self.log.log("🪟 Active Space changed → hide preview to avoid stale coordinates")
+                self.stateManager.hidePreview()
+            }
+        }
+        
         // ⭐️ 全局点击隐藏：监听系统任何地方的点击事件
         NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self = self, self.stateManager.currentState != .hidden else { return }
             
-            // 采用全局坐标（(0,0) 为左下角）
+            // 采用 AppKit 全局坐标（多屏下：主屏左下为原点；副屏 origin 反映其相对位置）
             let mouseLocation = NSEvent.mouseLocation
             
             // A. 如果点击在预览条内，不隐藏（虽然 Global Monitor 理论上不报本应用的点击，但这里加一层保险）
@@ -68,16 +86,22 @@ class PreviewBarController: NSObject {
                 return
             }
             
-            // B. 如果点击在 Dock 区域内，不隐藏
-            let dockPos = DockPositionManager.shared.currentPosition
+            // B. 如果点击在「鼠标所在屏幕」的 Dock 区域内，不隐藏
+            // ⭐️ 多显示器修复：基于鼠标所在屏幕判断，不再用 NSScreen.main
+            let mouseScreen = ScreenLocator.screenContainingAppKit(point: mouseLocation) ?? NSScreen.main
+            let screenFrame = mouseScreen?.frame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+            let dockPos = DockPositionManager.shared.position(for: mouseScreen)
             let thickness = DockPositionManager.shared.dockDetectionThickness
             
             let clickedInDock: Bool = {
                 switch dockPos {
-                case .bottom: return mouseLocation.y < thickness
-                case .left:   return mouseLocation.x < thickness
-                case .right:  let screenW = NSScreen.main?.frame.width ?? 1200
-                               return mouseLocation.x > (screenW - thickness)
+                case .bottom:
+                    // AppKit y 越小越靠下；底部 Dock 占据屏幕底部 thickness 高度
+                    return mouseLocation.y >= screenFrame.minY && mouseLocation.y < (screenFrame.minY + thickness)
+                case .left:
+                    return mouseLocation.x >= screenFrame.minX && mouseLocation.x < (screenFrame.minX + thickness)
+                case .right:
+                    return mouseLocation.x > (screenFrame.maxX - thickness) && mouseLocation.x <= screenFrame.maxX
                 }
             }()
             
@@ -88,6 +112,7 @@ class PreviewBarController: NSObject {
             // C. 只有点击桌面、其他窗口等真正“离开”的操作，才立刻强制关闭
             self.stateManager.hidePreview()
         }
+
     }
     
     /// 启动预览功能
@@ -118,10 +143,33 @@ class PreviewBarController: NSObject {
         
         hoverMonitor.stop()
         hidePreviewBar()
+        // ⭐️ 兜底：彻底清理大图预览，避免应用退出/停服后桌面上仍遗留大图
+        forceHideLargePreview()
         isStarted = false
         
         log.log("🛑 Preview bar controller stopped")
     }
+    
+    /// ⭐️ 强制隐藏大图预览（兜底方法）
+    /// 用于：hidePreviewBar 完成后、stop()、watchdog 触发等所有需要确保大图消失的场景
+    /// 同步执行，不带动画，确保 100% 关闭
+    private func forceHideLargePreview() {
+        unpeekWorkItem?.cancel()
+        unpeekWorkItem = nil
+        largePreviewWatchdog?.cancel()
+        largePreviewWatchdog = nil
+        
+        if let largeWindow = largePreviewWindow {
+            largeWindow.orderOut(nil)
+            largeWindow.contentView = nil
+            largeWindow.alphaValue = 1   // 重置 alpha，下次复用时不会还是 0
+        }
+        currentPeekWindowId = nil
+        
+        // ⭐️ 聚焦预览：兜底关闭遮罩，绝不让毛玻璃残留在桌面
+        FocusPreviewMaskController.shared.hide(animated: false)
+    }
+
     
     /// 重新启动（用于设置变更后）
     func restart() {
@@ -218,7 +266,10 @@ class PreviewBarController: NSObject {
         hoverMonitor.isPreviewBarVisible = true
         
         // 显示窗口
-        window.orderFront(nil)
+        // ⭐️ 多桌面（Spaces）修复：用 orderFrontRegardless()，
+        //    强制把小窗顶到当前活跃 Space 的最前。
+        //    普通 orderFront 在切到新 Space 后偶尔会被系统判定为属于旧 Space 而不显示。
+        window.orderFrontRegardless()
         
         // 动画效果
         window.alphaValue = 0
@@ -237,6 +288,10 @@ class PreviewBarController: NSObject {
         hoverMonitor.isPreviewBarVisible = false
         hoverMonitor.previewBarFrame = .zero
         
+        // ⭐️ 聚焦预览：预览条隐藏时，遮罩也必须随之消失（用户已离开 hover 区域）
+        FocusPreviewMaskController.shared.hide(animated: true)
+
+        
         // 动画效果
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.1
@@ -252,6 +307,9 @@ class PreviewBarController: NSObject {
                 window.contentView = nil 
                 window.orderOut(nil)
                 self.viewModel = nil
+                // ⚠️ 这里"曾经"加过 self.forceHideLargePreview()，但它会在某些时序下与 hover 后台
+                //    线程产生 retain/release 数据竞争（SIGSEGV）。
+                //    大图的兜底关闭由 showLargePreview 末尾的 5s watchdog 负责，已足够。
             }
         }
     }
@@ -260,19 +318,20 @@ class PreviewBarController: NSObject {
     /// 注意：如果 isTransitioning 是 private，需要修改 WindowManager.swift 
     
     /// 更新监听区域
+    /// - Parameter frame: 预览条窗口在 AppKit 全局坐标系中的 Frame
     private func updateHoverMonitorFrame(windowFrame frame: CGRect) {
-        let screenHeight = NSScreen.main?.frame.height ?? 1080
-        
-        // ⭐️ 极致修复：预览条判定区域严格等于窗口物理区域
-        // 不再向 Dock 图标区进行物理扩张，防止在侧边 Dock 上滑动时产生“检测短路”
-        // 窗口与图标间的“空隙保护”完全交由 HoverEventMonitor 的安全走廊 (Safe Corridor) 处理
+        // ⭐️ 多显示器修复：HoverEventMonitor 收到的 location 是 CG 全局坐标 (主屏左上为原点)，
+        //    所以这里的 previewBarFrame 也必须是 CG 全局坐标。
+        //    转换规则：cg.y = primaryScreen.maxY - appKit.y - height
+        let primaryMaxY: CGFloat = NSScreen.screens.first.map { $0.frame.origin.y + $0.frame.height } ?? 1080
         hoverMonitor.previewBarFrame = CGRect(
             x: frame.origin.x,
-            y: screenHeight - frame.origin.y - frame.height,
+            y: primaryMaxY - frame.origin.y - frame.height,
             width: frame.width,
             height: frame.height
         )
     }
+
     
     /// 创建预览窗口
     private func createPreviewWindow() {
@@ -286,9 +345,20 @@ class PreviewBarController: NSObject {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.level = .popUpMenu // 设为更高层级，在遮罩之上
-        window.hasShadow = true
+        // ⭐️ 关闭 AppKit 系统阴影：
+        //  在 macOS 26+ 上 SwiftUI .glassEffect() 会自带液态玻璃的边缘折射光晕，
+        //  AppKit 旧式 hasShadow 会贴着圆角矩形再画一圈灰阴影，
+        //  既"压住"了液态玻璃自带的折射效果，也是浅色模式下灰描边的主要来源。
+        //  老系统（macOS 13~15）的 NSVisualEffectView 也无需依赖 hasShadow，
+        //  统一关掉视觉更干净。
+        window.hasShadow = false
         window.isReleasedWhenClosed = false
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+        // ⭐️ 多桌面（Spaces）修复：
+        //  - 移除 .stationary：它表示窗口"贴在屏幕上不跟随 Space 切换"，
+        //    在与 .canJoinAllSpaces 同时使用时，普通 Space 切换后系统会出现
+        //    Space 归属错乱，导致预览小窗在新 Space 上彻底不显示。
+        //  - 加上 .fullScreenAuxiliary：让悬浮窗能正确出现在全屏 App 形成的独立 Space。
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         
         // 忽略鼠标事件透传（让 SwiftUI 处理）
         window.ignoresMouseEvents = false
@@ -300,58 +370,75 @@ class PreviewBarController: NSObject {
     
     /// 计算窗口尺寸
     private func calculateWindowSize(windowCount: Int) -> NSSize {
-        // ThumbnailCardView: 160 width + 8*2 horizontal padding = 176
+        // ThumbnailCardView: 180 width + 8*2 horizontal padding = 196
         // HStack spacing: 8
-        let cardFullWidth: CGFloat = 176 + 8 
-        let viewPadding: CGFloat = 40 // HStack padding (20*2)
+        // ⭐️ 与 ThumbnailCardView 中放大后的 thumbnailWidth(180) 保持同步，
+        //    否则窗口宽度会比内容窄，导致 ScrollView 首屏偏移（截图偏右 bug）
+        let cardFullWidth: CGFloat = 196 + 8
+        // ⭐️ 与 PreviewBarView 中 HStack.padding(.horizontal, 10) 同步：10×2 = 20
+        let viewPadding: CGFloat = 20
         let maxWidth = (NSScreen.main?.frame.width ?? 1200) * 0.95
         
         // 我们要窗口大小精准包裹内容，才能实现完美居中
         let contentWidth = CGFloat(windowCount) * cardFullWidth - 8 + viewPadding
         let width = min(contentWidth, maxWidth)
         
-        return NSSize(width: width, height: 180)
+        // ⭐️ 容器高度 182 → 166：上下两层 vertical padding 进一步压到 2/2，整体小窗更紧凑
+        return NSSize(width: width, height: 166)
     }
     
-    /// 计算窗口位置
+    /// 计算窗口位置（多显示器感知）
+    /// - Parameters:
+    ///   - iconPosition: Dock 图标在 CG 全局坐标系下的中心点 (主屏左上为原点)
+    ///   - windowSize: 预览窗口尺寸
+    /// - Returns: NSWindow setFrameOrigin 期望的 AppKit 全局坐标 (主屏左下为原点)
     private func calculateWindowPosition(iconPosition: CGPoint, windowSize: NSSize) -> NSPoint {
-        guard let screen = NSScreen.main else {
+        // ⭐️ 多显示器修复：以「Dock 图标所在的屏幕」作为参考，而不是 NSScreen.main
+        // iconPosition 是 CG 坐标 (Dock 图标 axElement 给的也是 CG 坐标)，先定位屏幕
+        let iconScreen = ScreenLocator.screenContainingCG(point: iconPosition)
+            ?? NSScreen.main
+        
+        guard let screen = iconScreen else {
             return NSPoint(x: 100, y: 100)
         }
         
-        let dockPos = DockPositionManager.shared.currentPosition
-        let screenHeight = screen.frame.height
-        let screenWidth = screen.frame.width
-        let appKitY = screenHeight - iconPosition.y
+        let screenFrame = screen.frame  // AppKit 坐标，包含该屏的相对位置
+        let dockPos = DockPositionManager.shared.position(for: screen)
+        let dockThickness = DockPositionManager.shared.realDockThickness(for: screen)
+        
+        // 把 CG 图标坐标转换为 AppKit 全局坐标
+        let iconAK = ScreenLocator.appKitPoint(fromCGGlobal: iconPosition)
         
         var x: CGFloat = 0
         var y: CGFloat = 0
         
         switch dockPos {
         case .bottom:
-            x = iconPosition.x - windowSize.width / 2
-            // ⭐️ 紧贴模式：底部 Dock 需要完全盖住系统标签 (带箭头胶囊)，所以偏移设为 0
-            y = DockPositionManager.shared.realDockThickness
+            // X 与图标水平居中对齐
+            x = iconAK.x - windowSize.width / 2
+            // Y 紧贴 Dock 顶部：以该屏底边 + dockThickness 为 baseline
+            y = screenFrame.minY + dockThickness
             
         case .left:
-            // ⭐️ 呼吸模式：侧边 Dock 用户反馈 10px 间距良好
-            x = DockPositionManager.shared.realDockThickness + 10
-            y = appKitY - windowSize.height / 2 // 与图标垂直居中对齐
+            // X：紧贴左侧 Dock 右沿 + 10px
+            x = screenFrame.minX + dockThickness + 10
+            // Y 与图标垂直居中对齐
+            y = iconAK.y - windowSize.height / 2
             
         case .right:
-            // ⭐️ 呼吸模式：右侧同理
-            let thickness = DockPositionManager.shared.realDockThickness
-            x = screenWidth - thickness - 10 - windowSize.width
-            y = appKitY - windowSize.height / 2 // 与图标垂直居中对齐
+            // X：紧贴右侧 Dock 左沿 - windowSize.width - 10px
+            x = screenFrame.maxX - dockThickness - 10 - windowSize.width
+            y = iconAK.y - windowSize.height / 2
         }
         
-        // 确保不超出屏幕边界
-        let clampedX = max(10, min(x, screenWidth - windowSize.width - 10))
-        let clampedY = max(80, min(y, screenHeight - windowSize.height - 10))
+        // 确保不超出该屏幕边界（不再用主屏宽高）
+        let clampedX = max(screenFrame.minX + 10, min(x, screenFrame.maxX - windowSize.width - 10))
+        let clampedY = max(screenFrame.minY + 10, min(y, screenFrame.maxY - windowSize.height - 10))
         
         return NSPoint(x: clampedX, y: clampedY)
     }
 }
+
 
 // MARK: - HoverEventMonitorDelegate
 
@@ -373,11 +460,9 @@ extension PreviewBarController: HoverEventMonitorDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self = self else { return }
             
-            // 检查鼠标当前位置
+            // ⭐️ 多显示器修复：用 ScreenLocator 把 AppKit 鼠标坐标转 CG，再与 previewBarFrame (CG) 比较
             let mouseLocation = NSEvent.mouseLocation
-            let screenHeight = NSScreen.main?.frame.height ?? 0
-            let cgMouseY = screenHeight - mouseLocation.y
-            let cgMousePos = CGPoint(x: mouseLocation.x, y: cgMouseY)
+            let cgMousePos = ScreenLocator.cgPoint(fromAppKitGlobal: mouseLocation)
             
             // ⭐️ 核心修复：移除 redundant 的 inDock 判定
             // 如果鼠标不在预览条内，且 monitor 已经报告退出了 App（这就是此回调触发的原因），就应该关掉。
@@ -400,16 +485,16 @@ extension PreviewBarController: HoverEventMonitorDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
             // 再次检查鼠标是否真的离开了
+            // ⭐️ 多显示器修复：同上
             let mouseLocation = NSEvent.mouseLocation
-            let screenHeight = NSScreen.main?.frame.height ?? 0
-            let cgMouseY = screenHeight - mouseLocation.y
-            let cgMousePos = CGPoint(x: mouseLocation.x, y: cgMouseY)
+            let cgMousePos = ScreenLocator.cgPoint(fromAppKitGlobal: mouseLocation)
             
             if !self.hoverMonitor.previewBarFrame.contains(cgMousePos) {
                 self.stateManager.hidePreview()
             }
         }
     }
+
     
 }
 
@@ -525,6 +610,9 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         unpeekWorkItem?.cancel()
         unpeekWorkItem = nil
         
+        // ⭐️ 聚焦预览：与大图同步淡出（动画时长一致，视觉同节奏）
+        FocusPreviewMaskController.shared.hide(animated: true)
+        
         guard let largeWindow = largePreviewWindow else { return }
         
         // 确保窗口是可见的（alpha=1），准备淡出
@@ -536,6 +624,7 @@ extension PreviewBarController: PreviewStateManagerDelegate {
             // 可选：同时也淡出缩略图条，让整个界面一起消失
             // self.previewWindow?.animator().alphaValue = 0
         } completionHandler: { [weak self] in
+
             guard let self = self else { return }
             
             // 动画结束，清理现场
@@ -565,7 +654,10 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         let closeAction: () -> Void = { [weak self] in
             _ = self?.largePreviewWindow?.orderOut(nil)
             self?.currentPeekWindowId = nil
+            // ⭐️ 聚焦预览：随大图一同消失（动画淡出，避免突兀）
+            FocusPreviewMaskController.shared.hide(animated: true)
         }
+
         
         if unpeekWindow {
             // 优雅关闭：延时执行，给下一个 peek 机会取消它
@@ -671,6 +763,24 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         window.setFrame(targetFrame, display: true)
         window.level = .floating
 
+        // ⭐️ 「聚焦预览」遮罩：在显示大图前/同时铺设全屏毛玻璃，并在截图所在位置挖洞
+        // 仅当用户开启了 enableFocusPreview 才生效；遮罩 level 比 .floating 低 1，
+        // 保证大图始终浮在毛玻璃之上。
+        if settings.enableFocusPreview {
+            // 选择截图主要落在的那块屏幕（用截图中心点定位，避免出界时误判）
+            let centerAK = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
+            let targetScreen = ScreenLocator.screenContainingAppKit(point: centerAK)
+                ?? screen
+            FocusPreviewMaskController.shared.update(
+                holeRectInAppKit: targetFrame,
+                on: targetScreen
+            )
+        } else {
+            // 用户已关闭聚焦预览：保险起见隐藏一下，覆盖运行时切换的边缘场景
+            FocusPreviewMaskController.shared.hide(animated: false)
+        }
+
+
         // ⭐️ 核心修正：改用原生 NSImageView 以获得像素级的对齐支持
         // SwiftUI 的容器在处理出界 Frame 时会有难以预料的居中行为，底层 NSImageView 更可控。
         let imageView = NSImageView(frame: NSRect(origin: .zero, size: targetFrame.size))
@@ -691,6 +801,23 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         // 垂直方向统一置顶（因为我们的 Frame 已经 flip 过了）
         // 如果是 imageAlignRight，会自动组合成右上对齐
         
+        // ⭐️ 「聚焦预览」配套：给截图加 12pt 圆角，避免方角矩形浮在毛玻璃上视觉突兀。
+        //   - 仅在 enableFocusPreview 开启时生效（普通预览维持原样，避免对正常透视引入视觉变化）
+        //   - 12pt 与 macOS Big Sur+ 标准窗口外圆角一致，对绝大多数 App 视觉自然贴合
+        //   - 用 wantsLayer + cornerRadius，AppKit 会自动裁切 NSImageView 渲染的图像
+        if settings.enableFocusPreview {
+            imageView.wantsLayer = true
+            imageView.layer?.cornerRadius = 12
+            imageView.layer?.masksToBounds = true
+            if #available(macOS 10.15, *) {
+                imageView.layer?.cornerCurve = .continuous   // 苹果"超椭圆"圆角，更接近系统窗口
+            }
+        } else {
+            // 关闭聚焦预览时确保不残留圆角（窗口可能被复用）
+            imageView.layer?.cornerRadius = 0
+            imageView.layer?.masksToBounds = false
+        }
+        
         window.contentView = imageView
         log.log("🖼 Image size (Point): \(displayImage.size) set to Content View")
         
@@ -699,5 +826,21 @@ extension PreviewBarController: PreviewStateManagerDelegate {
             window.orderFront(nil)
             window.animator().alphaValue = 1
         }
+        
+        // ⭐️ 兜底 watchdog：5 秒后无论如何都强制关闭大图
+        // 防御任何时序异常导致大图遗留在桌面（用户必须强制退出 App 才能消失）
+        // 实际正常使用中，鼠标移开/点击/隐藏等所有正常路径都会更早地关闭大图，
+        // 这只是最后一道保险。
+        largePreviewWatchdog?.cancel()
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            // 只有大图还可见时才触发强制隐藏，避免误关闭
+            if self.largePreviewWindow?.isVisible == true {
+                self.log.log("⏰ Large preview watchdog fired (\(self.largePreviewMaxLifetime)s elapsed), forcing close")
+                self.forceHideLargePreview()
+            }
+        }
+        largePreviewWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + largePreviewMaxLifetime, execute: watchdog)
     }
 }

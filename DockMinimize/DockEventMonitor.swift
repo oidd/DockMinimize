@@ -194,18 +194,25 @@ class DockEventMonitor {
         
         // 2. 右键/中键点击立刻关闭预览 (Dock 的右键菜单优先级最高)
         let location = event.location
-        let screen = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
-        let dockPos = DockPositionManager.shared.currentPosition
+        // ⭐️ 多显示器修复：定位到鼠标当前所在屏幕，而不是固定 NSScreen.main
+        let mouseScreen = ScreenLocator.screenContainingCG(point: location) ?? NSScreen.main
+        let screenFrame = mouseScreen?.frame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+        let dockPos = DockPositionManager.shared.position(for: mouseScreen)
         let thickness = DockPositionManager.shared.dockDetectionThickness
+        let mouseAK = ScreenLocator.appKitPoint(fromCGGlobal: location)
         
         // 2. 判断是否在 Dock 区域内 (支持左/右/底)
         let inDock: Bool = {
             switch dockPos {
-            case .bottom: return location.y > (screen.height - thickness)
-            case .left:   return location.x < thickness
-            case .right:  return location.x > (screen.width - thickness)
+            case .bottom:
+                return mouseAK.y >= screenFrame.minY && mouseAK.y < (screenFrame.minY + thickness)
+            case .left:
+                return mouseAK.x >= screenFrame.minX && mouseAK.x < (screenFrame.minX + thickness)
+            case .right:
+                return mouseAK.x > (screenFrame.maxX - thickness) && mouseAK.x <= screenFrame.maxX
             }
         }()
+
         
         // 3. 右键/中键点击立刻关闭预览
         if type == .rightMouseDown || type == .otherMouseDown {
@@ -320,7 +327,8 @@ class DockEventMonitor {
                                 return
                             }
                             let totalWindows = WindowThumbnailService.shared.getWindows(for: clickedBundleId, respectDockExclusions: false)
-                            if totalWindows.isEmpty && clickedBundleId != "com.apple.finder" {
+                            // I4: Finder 不放行 Reopen（系统 reopen 会打开新 Finder 窗口，污染既有最小化集合）
+                            if totalWindows.isEmpty && !FinderSpecialHandler.shouldSkipReopen(for: clickedBundleId) {
                                 // 真正无窗口状态 -> 放行给系统触发 Reopen
                                 semaphore.signal()
                                 return

@@ -30,6 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         dockOwnershipTipController.start()
         
         // 检查辅助功能权限后启动 Dock 事件监听
+
         if AccessibilityManager.shared.isAccessibilityEnabled {
             startDockMonitoring()
             startHoverPreview()
@@ -116,7 +117,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func startHoverPreview() {
         guard previewBarController == nil else { return }
         previewBarController = PreviewBarController.shared
-        previewBarController?.start()
+        // ⭐️ 启动后延迟 0.8 秒再启动 hover 监听
+        // 原因：刚启动时 SwiftUI/AppKit 资源、字体缓存、NSVisualEffectView 材质引擎等还在初始化，
+        //     如果用户立即把鼠标停在 Dock 图标上触发预览条创建，可能因为某些资源未就绪而崩溃。
+        //     延迟启动给系统留出 cold-start 缓冲，提高启动稳定性。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.previewBarController?.start()
+        }
     }
 
     private func startHotkeyMonitoring() {
@@ -135,7 +142,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let logger = DebugLogger.shared
             logger.logCritical("Uncaught exception: \(exception.name.rawValue)")
             logger.logCritical("Reason: \(exception.reason ?? "unknown")")
-            logger.logCritical("Stack: \(exception.callStackSymbols.prefix(10).joined(separator: "\n"))")
+            // ⭐️ 增强：记录完整栈帧（不再 prefix(10)），方便定位代码行
+            logger.logCritical("Stack: \(exception.callStackSymbols.joined(separator: "\n"))")
             logger.flush()
         }
         
@@ -145,6 +153,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             signal(sig) { signalNumber in
                 let logger = DebugLogger.shared
                 logger.logCritical("Fatal signal received: \(signalNumber)")
+                // ⭐️ 增强：信号崩溃也记录调用栈
+                let stack = Thread.callStackSymbols.joined(separator: "\n")
+                logger.logCritical("Crash stack:\n\(stack)")
                 logger.flush()
                 // 还原默认处理并重新触发（产生正常的崩溃报告）
                 signal(signalNumber, SIG_DFL)

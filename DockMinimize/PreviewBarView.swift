@@ -15,9 +15,10 @@ struct PreviewBarView: View {
     
     var body: some View {
         ZStack {
-            // 原生 Liquid Glass 材质背景 (底层安全加固版)
-            LiquidGlassView()
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+            // 背景：
+            // - macOS 26+（Tahoe）：使用 SwiftUI 原生 .glassEffect() 实现真·液态玻璃
+            // - 旧系统：回退到 NSVisualEffectView 自定义磨砂玻璃（LiquidGlassView）
+            backgroundLayer
             
             // 水平滚动视图
             ScrollViewReader { scrollProxy in
@@ -43,8 +44,10 @@ struct PreviewBarView: View {
                             .id(window.windowId)
                         }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
+                    // ⭐️ 缩小外层留白，让中央截图视觉占比更大、整体小窗更紧凑
+                    .padding(.horizontal, 10)
+                    // ⭐️ 上下 padding 6 → 2：标题/指示条本行已含天然留白，再加 padding 会显得上下偏多
+                    .padding(.vertical, 2)
                 }
                 .coordinateSpace(name: "scroll")
                 .overlay(
@@ -98,10 +101,82 @@ struct PreviewBarView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
-        .frame(height: 180)
+        // ⭐️ 容器高度 182 → 166：进一步压缩上下两层 vertical padding（卡片 6→2、外层 6→2，共 -16pt）
+        //    与 PreviewBarController.calculateWindowSize 中的 height 保持同步
+        .frame(height: 166)
         .frame(maxWidth: viewModel.maxWidth)
         .onAppear {
             viewModel.onAppear()
+        }
+    }
+    
+    /// 背景层：在 macOS 26+（Tahoe）上使用 SwiftUI 原生 .glassEffect()，
+    /// 在更早的系统上回退到自定义的 NSVisualEffectView 磨砂玻璃。
+    ///
+    /// ⭐️ 因为 NSWindow 会裁切 frame 之外的内容，传统的 .shadow（外发光）会被切掉。
+    ///    所以这里改用"内发光描边"方案：
+    ///    在玻璃层之上覆盖一个圆角矩形描边，stroke 颜色按外观自适应，
+    ///    再用 .blur(radius:) 让描边渐变模糊，营造温柔的内辉光效果。
+    ///    描边完全在小窗轮廓内侧（不超出 frame），永远不会被裁断。
+    @ViewBuilder
+    private var backgroundLayer: some View {
+        let glassShape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        
+        ZStack {
+            // 1) 真正的玻璃层
+            if #available(macOS 26.0, *) {
+                // macOS 26+: 真·液态玻璃。
+                // 用一个透明形状承载 .glassEffect，由系统去渲染液态玻璃材质（含动态高光、折射）。
+                // .regular 在浅色/深色模式下系统会自动调色，无需我们再做适配，也不会有"灰色描边"。
+                Color.clear
+                    .glassEffect(.regular, in: glassShape)
+            } else {
+                // macOS 13 ~ 15：使用现有的自定义 LiquidGlassView（NSVisualEffectView 磨砂玻璃）
+                LiquidGlassView()
+                    .clipShape(glassShape)
+            }
+            
+            // 2) ⭐️ 内发光描边层：紧贴小窗轮廓内侧的一圈柔和辉光。
+            //    - 描边线本身用 LinearGradient 上浅下深，模拟自然光照
+            //    - 然后整个描边再裁剪到圆角矩形内（避免线宽外溢出去再被 NSWindow 裁掉）
+            //    - 不使用 .blur，避免破坏 .glassEffect 的折射效果
+            glassShape
+                .strokeBorder(haloStroke, lineWidth: 1)
+                // 用形状本身遮罩，确保描边即使有亚像素抗锯齿溢出，
+                // 也不会跑到圆角外形成方角
+                .allowsHitTesting(false)
+        }
+    }
+    
+    // MARK: - 自适应光晕配色
+    
+    @Environment(\.colorScheme) private var colorScheme
+    
+    /// 内发光描边：上→下渐变，贴合自然光从上方打下来的视觉习惯。
+    /// 整体不透明度调淡：让光晕只是若隐若现的"质感细节"，不抢焦点。
+    private var haloStroke: LinearGradient {
+        if colorScheme == .dark {
+            // 深色模式：上方淡白高光（小窗"边缘亮起来"），下方更弱
+            return LinearGradient(
+                colors: [
+                    Color.white.opacity(0.16),
+                    Color.white.opacity(0.06),
+                    Color.white.opacity(0.02)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        } else {
+            // 浅色模式：上方淡灰高光，下方更深一点 → 与白底产生区隔但仍温柔
+            return LinearGradient(
+                colors: [
+                    Color.black.opacity(0.06),
+                    Color.black.opacity(0.035),
+                    Color.black.opacity(0.02)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
         }
     }
 }
@@ -157,13 +232,24 @@ struct ScrollGestureHandler: NSViewRepresentable {
 // MARK: - Liquid Glass Implementation (Safe Unsafe Version)
 
 struct LiquidGlassView: View {
+    /// ⭐️ 跟随系统外观自适应：
+    /// - 深色模式：保持原 (17 + 19) 双层叠加，视觉效果不变
+    /// - 浅色模式：大幅降低顶层 Liquid Glass (19) 的不透明度（甚至关闭底层 17），
+    ///   削弱它在浅色背景下边缘的灰色描边/高光，让小窗轮廓更柔和、更"通透"
+    @Environment(\.colorScheme) private var colorScheme
+    
     var body: some View {
         ZStack {
-            // 底层：材质 17 (System Dark)
-            VisualEffectVariantView(variantID: 17, alpha: 0.65)
-            
-            // 顶层：材质 19 (Liquid Glass)
-            VisualEffectVariantView(variantID: 19, alpha: 1.0)
+            if colorScheme == .dark {
+                // 深色模式：维持原视觉
+                VisualEffectVariantView(variantID: 17, alpha: 0.65)
+                VisualEffectVariantView(variantID: 19, alpha: 1.0)
+            } else {
+                // 浅色模式：
+                // 1) 底层 17 (System Dark) 在浅色下会贡献一圈深灰描边，关掉
+                // 2) 顶层 19 (Liquid Glass) 进一步降到 0.25，仅保留极淡的玻璃质感
+                VisualEffectVariantView(variantID: 19, alpha: 0.25)
+            }
         }
     }
 }

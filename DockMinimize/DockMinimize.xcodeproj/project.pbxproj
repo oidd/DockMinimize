@@ -32,8 +32,14 @@
 		A1000024 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* HotkeyManager.swift */; };
 		A1000025 /* SideBarBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* SideBarBridge.swift */; };
 		A1000028 /* Recommends in Resources */ = {isa = PBXBuildFile; fileRef = A2000031 /* Recommends */; };
+		A1000040 /* SidebarIcons in Resources */ = {isa = PBXBuildFile; fileRef = A2000040 /* SidebarIcons */; };
 		A1000029 /* DockOwnershipTipController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000032 /* DockOwnershipTipController.swift */; };
+		A1000030 /* FinderSpecialHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000033 /* FinderSpecialHandler.swift */; };
+		A1000031 /* FocusPreviewMaskController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000034 /* FocusPreviewMaskController.swift */; };
 /* End PBXBuildFile section */
+
+
+
 
 /* Begin PBXFileReference section */
 		A2000001 /* DockMinimizeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockMinimizeApp.swift; sourceTree = "<group>"; };
@@ -66,8 +72,14 @@
 		A2000029 /* AboutAppIconDark.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Resources/AboutAppIconDark.png; sourceTree = "<group>"; };
 		A2000030 /* AboutAppIconLight.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Resources/AboutAppIconLight.png; sourceTree = "<group>"; };
 		A2000031 /* Recommends */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/Recommends; sourceTree = "<group>"; };
+		A2000040 /* SidebarIcons */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/SidebarIcons; sourceTree = "<group>"; };
 		A2000032 /* DockOwnershipTipController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockOwnershipTipController.swift; sourceTree = "<group>"; };
+		A2000033 /* FinderSpecialHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderSpecialHandler.swift; sourceTree = "<group>"; };
+		A2000034 /* FocusPreviewMaskController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusPreviewMaskController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+
+
 
 /* Begin PBXFrameworksBuildPhase section */
 		A300000F /* Frameworks */ = {
@@ -114,10 +126,16 @@
 				A2000027 /* HotkeyManager.swift */,
 				A2000028 /* SideBarBridge.swift */,
 				A2000032 /* DockOwnershipTipController.swift */,
+				A2000033 /* FinderSpecialHandler.swift */,
+				A2000034 /* FocusPreviewMaskController.swift */,
 				A2000026 /* AppIcon.icon */,
+
+
+
 				A2000029 /* AboutAppIconDark.png */,
 				A2000030 /* AboutAppIconLight.png */,
 				A2000031 /* Recommends */,
+				A2000040 /* SidebarIcons */,
 				A2000009 /* Assets.xcassets */,
 				A2000010 /* Info.plist */,
 				A2000012 /* DockMinimize.entitlements */,
@@ -195,6 +213,7 @@
 					A1000023 /* AppIcon.icon in Resources */,
 					A1000009 /* Assets.xcassets in Resources */,
 					A1000028 /* Recommends in Resources */,
+					A1000040 /* SidebarIcons in Resources */,
 				);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -228,10 +247,15 @@
 				A1000024 /* HotkeyManager.swift in Sources */,
 				A1000025 /* SideBarBridge.swift in Sources */,
 				A1000029 /* DockOwnershipTipController.swift in Sources */,
+				A1000030 /* FinderSpecialHandler.swift in Sources */,
+				A1000031 /* FocusPreviewMaskController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+
+
 
 /* Begin XCBuildConfiguration section */
 		A8000001 /* Debug */ = {
@@ -359,8 +383,8 @@
 				CODE_SIGN_ENTITLEMENTS = DockMinimize.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 3;
-				DEVELOPMENT_TEAM = ;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = 793MN25H4S;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
@@ -371,7 +395,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.3;
+				MARKETING_VERSION = 1.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dockminimize.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -388,8 +412,8 @@
 				CODE_SIGN_ENTITLEMENTS = DockMinimize.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 3;
-				DEVELOPMENT_TEAM = ;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = 793MN25H4S;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
@@ -400,7 +424,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.3;
+				MARKETING_VERSION = 1.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dockminimize.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

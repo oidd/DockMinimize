@@ -72,8 +72,8 @@ class WindowManager {
 
         // 1. 唤醒阶段 (Wake Up Phase)
         // 如果 App 是隐藏的 (Cmd+H) 或 后台的 (Not Active)
-        // ⭐️ Finder 特殊处理：跳过 !wasActive 检查，因为 Finder 在只有桌面时可能报告 inactive
-        let shouldWakeUp = wasHidden || (bundleId != "com.apple.finder" && !wasEffectivelyActive)
+        // ⭐️ Finder 特殊处理（I1）：跳过 !wasActive 检查，因为 Finder 在只有桌面时可能报告 inactive
+        let shouldWakeUp = wasHidden || (!FinderSpecialHandler.handles(bundleId) && !wasEffectivelyActive)
         
         if shouldWakeUp {
             // ⭐️ 统一唤醒逻辑：不再区分来源，全部使用手动恢复机制
@@ -106,8 +106,9 @@ class WindowManager {
         )
         let windowCount = windows.count
         
-        // 防止连击 (Debounce)，所有应用均需遵循（除 Finder 外）
-        if bundleId != "com.apple.finder" {
+        // 防止连击 (Debounce)，所有应用均需遵循（除 Finder 外）。
+        // Finder 跳过此锁是为了实现极致丝滑（toggleWindows Finder 分支自带短锁 50ms）。
+        if !FinderSpecialHandler.handles(bundleId) {
             guard !isTransitioning else { return }
         }
         
@@ -123,31 +124,25 @@ class WindowManager {
             return
         }
         
-        // Finder 特殊逻辑：使用第一个窗口作为“确定性锚点”进行切换
-        if bundleId == "com.apple.finder" {
-            // ⭐️ 核心改进：不再使用 allSatisfy，而是直接以第一个窗口的状态作为基准。
-            // 这样能保证每次点击都有明确的切换方向，且与指示条同步。
+        // ⭐️ Finder 特殊逻辑（Bug③ 修复 + 收口到 FinderSpecialHandler）
+        // 以第一个窗口为「确定性锚点」决定切换方向：
+        //   - 第一个被缩小 → 全部恢复（用 toggleAllRestore：串行 setMinimized=false + 80ms 后 SkyLight raise，
+        //     避免 Finder 因 SkyLight 抢断而拒收后发的 setMinimized 写入，导致只恢复一个）
+        //   - 第一个被展开 → 全部缩小（toggleAllMinimize：主线程串行）
+        if FinderSpecialHandler.handles(bundleId) {
             let isFirstMinimized = windows.first?.isMinimized ?? true
 
             if isFirstMinimized {
-                // 如果第一个是缩小的 -> 全部恢复
-                restoreAllWindows(windows: windows, app: app)
+                FinderSpecialHandler.toggleAllRestore(windows: windows, app: app, log: DebugLogger.shared)
                 minimizedApps.remove(bundleId)
             } else {
-                // 如果第一个是展开的 -> 全部缩小
-                DispatchQueue.global(qos: .userInteractive).async {
-                    for window in windows {
-                        if !window.isMinimized {
-                            _ = AXUIElementSetAttributeValue(window.axElement, kAXMinimizedAttribute as CFString, true as CFTypeRef)
-                        }
-                    }
-                }
+                FinderSpecialHandler.toggleAllMinimize(windows: windows, log: DebugLogger.shared)
                 minimizedApps.insert(bundleId)
             }
 
             // 极致响应 (50ms)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.isTransitioning = false 
+                self?.isTransitioning = false
             }
             return
         }
@@ -198,9 +193,8 @@ class WindowManager {
         }
         minimizedApps.remove(bundleId)
         
-        // ⭐️ 固定延时解锁：Finder 缩短为 0.1s 以实现极致丝滑，其他应用维持 0.5s
-        // 固定延时解锁：Finder 0.05s，其他应用 0.1s (显著缩短以防止连点失效)
-        let delay = (bundleId == "com.apple.finder") ? 0.05 : 0.1
+        // ⭐️ 固定延时解锁：Finder 0.05s 以实现极致丝滑；其他应用 0.1s（防连点失效）。
+        let delay = FinderSpecialHandler.handles(bundleId) ? 0.05 : 0.1
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.isTransitioning = false 
         }
