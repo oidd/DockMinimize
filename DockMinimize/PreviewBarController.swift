@@ -59,6 +59,27 @@ class PreviewBarController: NSObject {
         NotificationCenter.default.addObserver(forName: NSNotification.Name("HidePreviewBarForcefully"), object: nil, queue: .main) { [weak self] _ in
             self?.stateManager.hidePreview()
         }
+
+        // ⭐️ 「保持小窗显示」开关：关闭时，点击任意 Dock 图标后立即隐藏预览。
+        // 现有 DockIconClicked 通知由 DockEventMonitor 在用户左键点击 Dock 图标时发出，
+        // PreviewBarViewModel.handleDockClick 也监听同一通知做指示条预测式翻转——这两条互不冲突。
+        //
+        // ⚠️ 时序关键：DockEventMonitor 用 10ms 超时保险箱包裹 post() 之后的所有工作。
+        // 若 post() 本身因为我们的观察者多做了额外调度（例如 queue:.main 会触发 OperationQueue
+        // 内部锁/run loop 调度），就可能把整体推过 10ms 超时阈值，导致 Dock 点击被系统放行、
+        // WindowManager.toggleWindows 不被调用（症状：指示条翻色但窗口不最小化）。
+        // 因此这里采用与现有 handleDockClick 一致的「无队列同步观察者 + 内部 async to main」
+        // 模式，使得 post() 的开销与改动前几乎相同。
+        NotificationCenter.default.addObserver(forName: NSNotification.Name("DockIconClicked"), object: nil, queue: nil) { [weak self] _ in
+            // 同步在 post 的后台线程内立刻 dispatch_async 到主线程，避免阻塞 10ms 时序窗口。
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard !SettingsManager.shared.previewStaysVisible else { return }
+                guard self.stateManager.currentState != .hidden else { return }
+                self.log.log("🪟 DockIconClicked + previewStaysVisible=false → hidePreview")
+                self.stateManager.hidePreview()
+            }
+        }
         
         // ⭐️ 多桌面（Spaces）修复：切换 Space 时主动清场，避免预览小窗带着旧 Space 的坐标
         // 残留在新 Space 上（或因 Space 归属错乱而完全不显示）
@@ -518,6 +539,25 @@ extension PreviewBarController: PreviewStateManagerDelegate {
             self?.viewModel?.activeWindowIds = activeIds
         }
     }
+
+    func previewStateManager(_ manager: PreviewStateManager,
+                             dwellProgressChanged progress: CGFloat,
+                             forWindowId windowId: CGWindowID) {
+        guard SettingsManager.shared.enableFocusPreview else { return }
+
+        if let bundleId = manager.currentAppBundleId,
+           let info = WindowThumbnailService.shared.getWindows(for: bundleId).first(where: { $0.windowId == windowId }) {
+            let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? 1080
+            var targetFrame = info.bounds
+            let appKitY = primaryScreenHeight - targetFrame.origin.y - targetFrame.height
+            targetFrame.origin.y = appKitY
+
+            let centerAK = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
+            let targetScreen = ScreenLocator.screenContainingAppKit(point: centerAK) ?? NSScreen.main ?? NSScreen()
+
+            FocusPreviewMaskController.shared.fadeInProgressively(progress: progress, on: targetScreen)
+        }
+    }
     
 
     
@@ -527,19 +567,33 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         // 取消挂起的隐藏任务（实现无缝切换）
         unpeekWorkItem?.cancel()
         unpeekWorkItem = nil
-        
+
         // 防止重复触发导致闪烁/重刷
         if currentPeekWindowId == windowId {
             return
         }
-        
+
         // 检查设置：是否启用原位预览
         if !SettingsManager.shared.enableOriginalPreview {
             return
         }
-        
+
         // 更新当前目标ID
         currentPeekWindowId = windowId
+
+        // ⭐️ 方案二兜底：peek 触发时确保遮罩渐进到完全显示
+        if SettingsManager.shared.enableFocusPreview {
+            if let bundleId = manager.currentAppBundleId,
+               let info = WindowThumbnailService.shared.getWindows(for: bundleId).first(where: { $0.windowId == windowId }) {
+                let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? 1080
+                var targetFrame = info.bounds
+                let appKitY = primaryScreenHeight - targetFrame.origin.y - targetFrame.height
+                targetFrame.origin.y = appKitY
+                let centerAK = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
+                let targetScreen = ScreenLocator.screenContainingAppKit(point: centerAK) ?? NSScreen.main ?? NSScreen()
+                FocusPreviewMaskController.shared.fadeInProgressively(progress: 1.0, on: targetScreen)
+            }
+        }
         
         // 1. 尝试获取缓存的缩略图（用于立即显示）
         var title = "Window Preview"

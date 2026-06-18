@@ -22,7 +22,7 @@ struct SettingsView: View {
     enum SettingsTab: String, CaseIterable {
         case permissions
         case general
-        case smallWindowPreview
+        case advancedFeatures
         case hotkeys
         case blacklist
         case about
@@ -31,7 +31,7 @@ struct SettingsView: View {
             switch self {
             case .permissions: return "lock.shield.fill"
             case .general: return "gearshape.fill"
-            case .smallWindowPreview: return "macwindow.fill"
+            case .advancedFeatures: return "sparkles"
             case .hotkeys: return "keyboard.fill"
             case .blacklist: return "minus.circle.fill"
             case .about: return "info.circle.fill"
@@ -42,7 +42,7 @@ struct SettingsView: View {
             switch self {
             case .permissions: return t("权限设置", "Permissions")
             case .general: return t("常规设置", "General")
-            case .smallWindowPreview: return t("小窗预览", "Small Window Preview")
+            case .advancedFeatures: return t("高级功能", "Advanced")
             case .hotkeys: return t("快捷键", "Hotkeys")
             case .blacklist: return t("黑名单", "Blacklist")
             case .about: return t("关于", "About")
@@ -96,8 +96,8 @@ struct SettingsView: View {
                             permissionsContent
                         case .general:
                             generalSettingsContent
-                        case .smallWindowPreview:
-                            smallWindowPreviewContent
+                        case .advancedFeatures:
+                            advancedFeaturesContent
                         case .hotkeys:
                             hotkeysContent
                         case .blacklist:
@@ -266,7 +266,7 @@ struct SettingsView: View {
         VStack(spacing: 16) {
             permissionCard(
                 title: t("辅助功能", "Accessibility"),
-                desc: t("用于监听 Dock 图标点击和鼠标悬停事件。", "Monitor Dock icon clicks and hover events."),
+                desc: t("用于监听 Dock 图标点击、鼠标悬停和窗口摇动事件。", "Monitor Dock icon clicks, hover events, and window shake gestures."),
                 isEnabled: accessibilityManager.isAccessibilityEnabled,
                 action: { accessibilityManager.requestAccessibility() }
             )
@@ -479,34 +479,79 @@ private func toggleRow(icon: String? = nil, title: String, isOn: Binding<Bool>) 
     .padding(12)
 }
 
-// MARK: - 3. 小窗预览内容
+// MARK: - 3. 高级功能内容
 
-    private var smallWindowPreviewContent: some View {
+    private var advancedFeaturesContent: some View {
     VStack(spacing: 20) {
+
+        // MARK: 摇窗聚焦组（主开关 + 子开关 + 蓝色提示 同 GroupBox）
+        GroupBox {
+            VStack(spacing: 0) {
+                // 主开关：.regular 大尺寸，作为整组主入口
+                toggleRowWithDesc(
+                    title: t("摇窗聚焦", "Shake to Focus"),
+                    desc: t("按住并快速晃动一个窗口时，自动最小化当前桌面上的其他窗口。",
+                            "Shake a dragged window to minimize other windows on the current desktop."),
+                    isOn: $settingsManager.shakeToFocusEnabled,
+                    toggleSize: .regular
+                )
+
+                if settingsManager.shakeToFocusEnabled {
+                    Divider().padding(.leading, 12)
+
+                    // 子开关：「再次摇晃恢复窗口」，沿用 .small 二级开关
+                    toggleRowWithDesc(
+                        title: t("再次摇晃恢复窗口", "Shake Again to Restore Windows"),
+                        desc: t("再次摇晃任意窗口时，若桌面已没有其它可见窗口，则恢复刚才被最小化的窗口。",
+                                "Shake any window again to restore previously minimized windows, provided no other visible windows remain on the desktop."),
+                        isOn: $settingsManager.shakeToFocusRestoreEnabled
+                    )
+
+                    // 蓝色提示框：作为本组最后一行，留出与开关行间距
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "link.circle.fill")
+                            .foregroundColor(.blue)
+                            .font(.title2)
+
+                        Text(t("摇窗聚焦会自动忽略黑名单应用，以及正在由 SideBar 管理贴边隐藏的窗口，避免破坏贴边工作流。",
+                               "Shake to Focus automatically ignores blacklisted apps and windows managed by SideBar edge hiding, preserving your edge-stash workflow."))
+                            .font(.subheadline)
+                            .lineSpacing(4)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer()
+                    }
+                    .padding(14)
+                    .background(Color.blue.opacity(0.08))
+                    .cornerRadius(10)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+
+        // MARK: 小窗预览组（主开关 + 4 个子开关 + 橙色提示 同 GroupBox）
         GroupBox {
             VStack(spacing: 0) {
                 toggleRow(
-                    title: t("启用小窗预览", "Enable Small Window Preview"),
+                    title: t("小窗预览", "Small Window Preview"),
                     isOn: $settingsManager.hoverPreviewEnabled
                 )
-            }
-            .onChange(of: settingsManager.hoverPreviewEnabled) { newValue in
-                if newValue { PreviewBarController.shared.start() }
-                else { PreviewBarController.shared.stop() }
-            }
-        }
-        
-        if settingsManager.hoverPreviewEnabled {
-            GroupBox {
-                VStack(spacing: 0) {
+
+                if settingsManager.hoverPreviewEnabled {
+                    Divider().padding(.leading, 12)
+
                     toggleRowWithDesc(
                         title: t("子窗口独立收起/展开", "Independent Sub-window Control"),
                         desc: t("点击预览窗口以操作特定子窗口。", "Click sub-windows to manage specifically."),
                         isOn: $settingsManager.enableIndependentWindowControl
                     )
-                    
+
                     Divider().padding(.leading, 12)
-                    
+
                     toggleRowWithDesc(
                         title: t("原位预览", "Original Preview"),
                         desc: t("在窗口原本消失的位置显示大图预览。", "Show large preview at original window location."),
@@ -530,29 +575,44 @@ private func toggleRow(icon: String? = nil, title: String, isOn: Binding<Bool>) 
                               || !settingsManager.enableOriginalPreview)
                     .opacity((settingsManager.enableIndependentWindowControl
                               && settingsManager.enableOriginalPreview) ? 1.0 : 0.5)
-                }
-                .padding(.vertical, 4)
-            }
 
-            
-            if settingsManager.enableOriginalPreview {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "lightbulb.fill")
-                        .foregroundColor(.orange)
-                        .font(.title2)
-                    
-                    Text(t("对于“访达”和其他开启了多窗口的软件，DockMinimize会改用“最小化窗口”的方式来实现窗口消失和展现。你可能会看到预览图的背面有一个短暂的“神奇效果/缩放效果”动画。", 
-                           "For \"Finder\" and other apps with multiple windows, DockMinimize will use the \"Minimize Window\" method for transitions. You might see a brief \"Genie/Scale effect\" animation behind the preview."))
-                        .font(.subheadline)
-                        .lineSpacing(4)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    
-                    Spacer()
+                    Divider().padding(.leading, 12)
+
+                    toggleRowWithDesc(
+                        title: t("保持小窗显示", "Keep Preview Visible"),
+                        desc: t("关闭后，点击 Dock 图标或预览缩略图时小窗会立即收起。",
+                                "When off, the preview hides immediately after clicking a Dock icon or a thumbnail."),
+                        isOn: $settingsManager.previewStaysVisible
+                    )
+
+                    if settingsManager.enableOriginalPreview {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "lightbulb.fill")
+                                .foregroundColor(.orange)
+                                .font(.title2)
+
+                            Text(t("对于“访达”和其他开启了多窗口的软件，DockMinimize会改用“最小化窗口”的方式来实现窗口消失和展现。你可能会看到预览图的背面有一个短暂的“神奇效果/缩放效果”动画。",
+                                   "For \"Finder\" and other apps with multiple windows, DockMinimize will use the \"Minimize Window\" method for transitions. You might see a brief \"Genie/Scale effect\" animation behind the preview."))
+                                .font(.subheadline)
+                                .lineSpacing(4)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Spacer()
+                        }
+                        .padding(14)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(10)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
+                        .padding(.bottom, 12)
+                    }
                 }
-                .padding(16)
-                .background(Color.orange.opacity(0.1))
-                .cornerRadius(12)
+            }
+            .padding(.vertical, 4)
+            .onChange(of: settingsManager.hoverPreviewEnabled) { newValue in
+                if newValue { PreviewBarController.shared.start() }
+                else { PreviewBarController.shared.stop() }
             }
         }
     }
@@ -560,7 +620,15 @@ private func toggleRow(icon: String? = nil, title: String, isOn: Binding<Bool>) 
 
 
 
-private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>) -> some View {
+/// 带描述的开关行。
+/// - `toggleSize`：开关本体尺寸。默认 `.small` 用于二级/子开关；
+///   主开关传 `.regular` 可获得和「小窗预览」那种主开关一致的大尺寸。
+private func toggleRowWithDesc(
+    title: String,
+    desc: String,
+    isOn: Binding<Bool>,
+    toggleSize: ControlSize = .small
+) -> some View {
     HStack {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.system(size: 14))
@@ -570,7 +638,7 @@ private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>)
         Toggle("", isOn: isOn)
             .labelsHidden()
             .toggleStyle(.switch)
-            .controlSize(.small)
+            .controlSize(toggleSize)
     }
     .padding(12)
 }
@@ -970,7 +1038,7 @@ private struct SidebarTabIcon: View {
         switch tab {
         case .permissions:        return "permissions"
         case .general:            return "general"
-        case .smallWindowPreview: return "preview"
+        case .advancedFeatures:   return "preview"
         case .hotkeys:            return "hotkey"
         case .blacklist:          return "blacklist"
         case .about:              return "about"
@@ -1055,9 +1123,7 @@ private struct SidebarRow: View {
     private var isSelected: Bool { selectedTab == tab }
 
     private var displayText: String {
-        tab == .smallWindowPreview
-            ? t("小窗预览", "Preview")
-            : tab.displayName(t: t)
+        tab.displayName(t: t)
     }
 
     private var backgroundFill: Color {

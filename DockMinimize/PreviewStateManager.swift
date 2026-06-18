@@ -48,6 +48,11 @@ protocol PreviewStateManagerDelegate: AnyObject {
     
     /// ⭐️ 新增：同步活跃窗口集合
     func previewStateManager(_ manager: PreviewStateManager, didUpdateActiveWindows activeIds: Set<CGWindowID>)
+
+    /// ⭐️ 聚焦预览优化：渐进遮罩进度回调（0.0 ~ 1.0）
+    func previewStateManager(_ manager: PreviewStateManager,
+                             dwellProgressChanged progress: CGFloat,
+                             forWindowId windowId: CGWindowID)
 }
 
 class PreviewStateManager {
@@ -106,7 +111,31 @@ class PreviewStateManager {
     
     /// 透视触发延迟（秒）
     private let peekDelay: TimeInterval = 0.1
-    
+
+    // MARK: - 聚焦预览优化（方案一 + 方案二 + 方案三）
+
+    /// 当前会话是否已触发过至少一次 peek（区分"首次进入"和"跨缩略图切换"）
+    private var hasPeekedInCurrentSession: Bool = false
+
+    /// 首次 peek 延迟（长一些，防误触）
+    private let firstPeekDelay: TimeInterval = 0.22
+
+    /// 后续 peek 延迟（保持原有极速响应）
+    private let normalPeekDelay: TimeInterval = 0.1
+
+    /// 方案二：渐进遮罩驻留进度与定时器
+    private var dwellProgress: CGFloat = 0
+    private var dwellTimer: Timer?
+    private var dwellRampWorkItem: DispatchWorkItem?
+    private let dwellRampDuration: TimeInterval = 0.30
+    private let dwellRampStartDelay: TimeInterval = 0.10
+
+    /// 方案三：快速切换检测
+    private var rapidSwitchCount: Int = 0
+    private var rapidSwitchWindowStart: Date = .distantPast
+    private let rapidSwitchThreshold: Int = 3
+    private let rapidSwitchWindow: TimeInterval = 0.4
+
     /// 最后一次由我们执行激活操作的窗口（持久保存直到隐藏）
     private var lastActivatedWindowId: CGWindowID?
     /// 最后一次通过系统查询到的焦点窗口 (在预览条显示时同步)
@@ -165,10 +194,14 @@ class PreviewStateManager {
     
     /// 显示预览条
     func showPreview(for bundleId: String, at position: CGPoint) {
-        // 如果切换了应用，清空置顶记忆
+        // 如果切换了应用，清空置顶记忆 + 聚焦预览会话状态
         if currentAppBundleId != bundleId {
             lastActivatedWindowId = nil
             lastFocusedWindowId = nil
+            hasPeekedInCurrentSession = false
+            rapidSwitchCount = 0
+            rapidSwitchWindowStart = .distantPast
+            cancelDwellRamp()
         }
         
         currentAppBundleId = bundleId
@@ -200,33 +233,68 @@ class PreviewStateManager {
     
     /// 鼠标悬停在缩略图上
     func hoverOnThumbnail(windowId: CGWindowID) {
-        // 如果正在滚动，不触发透视
         guard !isScrolling else { return }
-        
+
         // 如果已经在透视同一个窗口，不需要重新计时
         if case .peeking(let currentWindowId) = currentState, currentWindowId == windowId {
             return
         }
-        
-        // 取消之前的计时器
+
         cancelPeekTimer()
-        
-        // 开始新的透视计时
-        startPeekTimer(for: windowId)
+        cancelDwellRamp()
+
+        // ⭐️ 方案三：快速切换检测 —— 区分"扫视"和"有意停留"
+        let now = Date()
+
+        if now.timeIntervalSince(rapidSwitchWindowStart) < rapidSwitchWindow {
+            rapidSwitchCount += 1
+        } else {
+            rapidSwitchCount = 1
+            rapidSwitchWindowStart = now
+        }
+
+        // 如果正在快速扫视且尚未触发过 peek → 抑制触发
+        if rapidSwitchCount >= rapidSwitchThreshold && !hasPeekedInCurrentSession {
+            log.log("⏩ Rapid switching detected (\(rapidSwitchCount) in window), suppressing peek")
+            // ramp 可能已残留部分透明度，显式隐藏遮罩避免闪动残留
+            FocusPreviewMaskController.shared.hide(animated: true)
+            return
+        }
+
+        // ⭐️ 区分首次 / 后续 peek 延迟
+        let delay = hasPeekedInCurrentSession ? normalPeekDelay : firstPeekDelay
+        log.log("⏱️ Starting peek timer with delay: \(delay)s (hasPeeked: \(hasPeekedInCurrentSession))")
+
+        // ⭐️ 方案二：首次进入延迟 100ms 后才启动渐进遮罩 ramp
+        // 静默期过滤掉鼠标无意划过（<100ms），避免遮罩闪动
+        if !hasPeekedInCurrentSession {
+            dwellRampWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.startDwellRamp(for: windowId)
+            }
+            dwellRampWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + dwellRampStartDelay, execute: workItem)
+        }
+
+        startPeekTimer(for: windowId, delay: delay)
     }
     
     /// 鼠标离开缩略图
     func exitThumbnail() {
+        cancelDwellRamp()
         cancelPeekTimer()
-        
+
         // 如果正在透视，取消透视
         if case .peeking = currentState {
             cancelPeek()
-            
+
             // 回到 showing 状态
             if let bundleId = currentAppBundleId {
                 currentState = .showing(appBundleId: bundleId)
             }
+        } else {
+            // ramp 进行中但 peek 未触发：显式隐藏遮罩，避免残留部分透明度
+            FocusPreviewMaskController.shared.hide(animated: true)
         }
     }
     
@@ -435,15 +503,16 @@ class PreviewStateManager {
     // MARK: - Private Methods
     
     /// 开始透视计时
-    private func startPeekTimer(for windowId: CGWindowID) {
+    private func startPeekTimer(for windowId: CGWindowID, delay: TimeInterval? = nil) {
+        let effectiveDelay = delay ?? peekDelay
         let workItem = DispatchWorkItem { [weak self] in
             guard let self = self, !self.isScrolling else { return }
-            
+
             self.startPeek(windowId: windowId)
         }
-        
+
         peekTimer = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + peekDelay, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + effectiveDelay, execute: workItem)
     }
     
     /// 取消透视计时
@@ -451,9 +520,51 @@ class PreviewStateManager {
         peekTimer?.cancel()
         peekTimer = nil
     }
+
+    // MARK: - 方案二：渐进遮罩
+
+    /// 启动渐进遮罩驻留 ramp（0→1，共 dwellRampDuration 秒）
+    private func startDwellRamp(for windowId: CGWindowID) {
+        dwellProgress = 0
+        dwellTimer?.invalidate()
+
+        let stepInterval: TimeInterval = 1.0 / 60.0
+        let stepIncrement = CGFloat(stepInterval / dwellRampDuration)
+
+        let timer = Timer(fire: Date(), interval: stepInterval, repeats: true) { [weak self] timer in
+            guard let self = self else { timer.invalidate(); return }
+            guard !self.isScrolling else { timer.invalidate(); return }
+
+            self.dwellProgress = min(1.0, self.dwellProgress + stepIncrement)
+
+            DispatchQueue.main.async {
+                self.delegate?.previewStateManager(self,
+                                                   dwellProgressChanged: self.dwellProgress,
+                                                   forWindowId: windowId)
+            }
+
+            if self.dwellProgress >= 1.0 {
+                timer.invalidate()
+            }
+        }
+
+        dwellTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func cancelDwellRamp() {
+        dwellRampWorkItem?.cancel()
+        dwellRampWorkItem = nil
+        dwellTimer?.invalidate()
+        dwellTimer = nil
+        dwellProgress = 0
+    }
     
     /// 开始透视
     private func startPeek(windowId: CGWindowID) {
+        hasPeekedInCurrentSession = true
+        cancelDwellRamp()
+
         log.log("👁️ Starting peek for window \(windowId)")
         
         // 记录当前活跃应用（用于后续恢复焦点）

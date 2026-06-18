@@ -13,6 +13,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var dockEventMonitor: DockEventMonitor?
     private var previewBarController: PreviewBarController?
     private var hotkeyMonitor: HotkeyMonitor?
+    private var windowShakeMonitor: WindowShakeMonitor?
     private let dockOwnershipTipController = DockOwnershipTipController.shared
     
     /// EventTap 健康检查定时器
@@ -35,6 +36,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             startDockMonitoring()
             startHoverPreview()
             startHotkeyMonitoring()
+            startShakeToFocusMonitoring()
         }
         
         // 仅在首次启动时自动弹出设置面板
@@ -58,6 +60,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: .hotkeyBindingsChanged,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(shakeToFocusChanged),
+            name: .shakeToFocusChanged,
+            object: nil
+        )
         
         // ⭐️ 启动 EventTap 健康检查定时器（每 30 秒检查一次）
         startHealthCheck()
@@ -79,6 +88,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         dockEventMonitor?.stop()
         previewBarController?.stop()
         hotkeyMonitor?.stop()
+        windowShakeMonitor?.stop()
         SideBarBridge.shared.stop()
     }
     
@@ -92,6 +102,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             startDockMonitoring()
             startHoverPreview()
             startHotkeyMonitoring()
+            startShakeToFocusMonitoring()
         } else {
             dockEventMonitor?.stop()
             dockEventMonitor = nil
@@ -99,6 +110,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             previewBarController = nil
             hotkeyMonitor?.stop()
             hotkeyMonitor = nil
+            windowShakeMonitor?.stop()
+            windowShakeMonitor = nil
         }
     }
 
@@ -106,6 +119,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard AccessibilityManager.shared.isAccessibilityEnabled else { return }
         startHotkeyMonitoring()
         hotkeyMonitor?.reloadBindings()
+    }
+
+    @objc private func shakeToFocusChanged() {
+        guard AccessibilityManager.shared.isAccessibilityEnabled else { return }
+        startShakeToFocusMonitoring()
     }
     
     private func startDockMonitoring() {
@@ -131,6 +149,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             hotkeyMonitor = HotkeyMonitor.shared
         }
         hotkeyMonitor?.start()
+    }
+
+    private func startShakeToFocusMonitoring() {
+        guard SettingsManager.shared.shakeToFocusEnabled else {
+            windowShakeMonitor?.stop()
+            windowShakeMonitor = nil
+            return
+        }
+
+        if windowShakeMonitor == nil {
+            windowShakeMonitor = WindowShakeMonitor.shared
+        }
+        windowShakeMonitor?.start()
     }
     
     // MARK: - 崩溃保护
@@ -194,6 +225,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 monitor.stop()
                 self.hotkeyMonitor = nil
                 self.startHotkeyMonitoring()
+            }
+
+            if let monitor = self.windowShakeMonitor, !monitor.isAlive() {
+                DebugLogger.shared.logCritical("WindowShakeMonitor EventTap is dead! Rebuilding...")
+                monitor.stop()
+                self.windowShakeMonitor = nil
+                self.startShakeToFocusMonitoring()
             }
         }
     }

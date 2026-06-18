@@ -72,7 +72,32 @@ final class FocusPreviewMaskController {
             }
         }
     }
-    
+
+    /// ⭐️ 聚焦预览优化（方案二）：渐进式淡入遮罩
+    /// - Parameters:
+    ///   - progress: 0.0 ~ 1.0，遮罩目标透明度
+    ///   - screen: 遮罩所在屏幕
+    ///
+    /// 与 show() 不同：此方法允许部分透明度，用于在 peek timer 期间逐步显示遮罩。
+    /// 调用频率可达 60fps，每次调用都通过极短动画平滑过渡。
+    func fadeInProgressively(progress: CGFloat, on screen: NSScreen) {
+        let clamped = min(max(progress, 0), 1)
+
+        ensureWindowAndView(on: screen)
+        guard let window = window else { return }
+
+        if !window.isVisible && clamped > 0 {
+            window.alphaValue = 0
+            window.orderFront(nil)
+        }
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.05
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            window.animator().alphaValue = clamped
+        }
+    }
+
     /// 更新遮罩位置 / 触发显示。
     ///
     /// ⭐️ v2 起遮罩不再依赖 holeRect 挖洞，holeRectInAppKit 仅用来判断目标屏幕。

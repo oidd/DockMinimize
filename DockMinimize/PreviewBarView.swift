@@ -324,6 +324,10 @@ class PreviewBarViewModel: ObservableObject {
     
     /// ⭐️ 用于观察窗口数量变化，通知 Controller 刷新 Frame
     @Published var lastWindowCount: Int = 0
+
+    /// ⭐️ 聚焦预览防闪动：exitThumbnail 的去抖延迟任务
+    private var exitDebounceWorkItem: DispatchWorkItem?
+    private let exitDebounceDelay: TimeInterval = 0.05
     
     let log = DebugLogger.shared
     let thumbnailService = WindowThumbnailService.shared
@@ -517,6 +521,13 @@ class PreviewBarViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in 
             self?.refreshThumbnails(forceRefresh: true) 
         }
+
+        // ⭐️「保持小窗显示」开关：关闭时点击缩略图后立即收起预览。
+        // 注意：peek 大图状态下 clickThumbnail 内部已经触发 performSeamlessExit
+        // 来淡出大图本身，这里再调用 hidePreview() 会把缩略图条也一起淡出，互不冲突。
+        if !SettingsManager.shared.previewStaysVisible {
+            stateManager.hidePreview()
+        }
     }
     
     func closeWindow(_ window: WindowThumbnailService.WindowInfo) {
@@ -526,12 +537,22 @@ class PreviewBarViewModel: ObservableObject {
     
     func hoverWindow(_ window: WindowThumbnailService.WindowInfo, isHovered: Bool) {
         if isHovered {
+            // 进入新缩略图：取消挂起的 exit 去抖任务
+            exitDebounceWorkItem?.cancel()
+            exitDebounceWorkItem = nil
+
             hoveredWindowId = window.windowId
             stateManager.hoverOnThumbnail(windowId: window.windowId)
         } else {
             if hoveredWindowId == window.windowId {
                 hoveredWindowId = nil
-                stateManager.exitThumbnail()
+
+                // ⭐️ 防闪动：延迟退出，给鼠标穿过缩略图间隙留足窗口
+                let workItem = DispatchWorkItem { [weak self] in
+                    self?.stateManager.exitThumbnail()
+                }
+                exitDebounceWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + exitDebounceDelay, execute: workItem)
             }
         }
     }

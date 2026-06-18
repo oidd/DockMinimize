@@ -12,6 +12,8 @@ extension Notification.Name {
     static let operationModeChanged = Notification.Name("operationModeChanged")
     static let languageChanged = Notification.Name("languageChanged")
     static let hoverPreviewChanged = Notification.Name("hoverPreviewChanged")
+    static let shakeToFocusChanged = Notification.Name("shakeToFocusChanged")
+    static let shakeToFocusRestoreChanged = Notification.Name("shakeToFocusRestoreChanged")
     static let blacklistChanged = Notification.Name("blacklistChanged")
 }
 
@@ -52,6 +54,9 @@ class SettingsManager: ObservableObject {
     private let kShowInMenuBar = "showInMenuBar"
     private let kLanguage = "appLanguage"
     private let kHoverPreviewEnabled = "hoverPreviewEnabled"
+    private let kPreviewStaysVisible = "previewStaysVisible"
+    private let kShakeToFocusEnabled = "shakeToFocusEnabled"
+    private let kShakeToFocusRestoreEnabled = "shakeToFocusRestoreEnabled"
     private let kBlacklistedBundleIDs = "blacklistedBundleIDs"
     private let kHotkeyBindings = "hotkeyBindings"
     private let kSuppressDockMinimizeOwnershipTip = "suppressDockMinimizeOwnershipTip"
@@ -88,7 +93,36 @@ class SettingsManager: ObservableObject {
             NotificationCenter.default.post(name: .hoverPreviewChanged, object: nil)
         }
     }
-    
+
+    /// 「保持小窗显示」：默认开启。
+    /// - 开启时：保持现有行为，预览仅在鼠标离开 Dock 图标或预览小窗时才隐藏。
+    /// - 关闭时：点击 Dock 图标或点击预览缩略图后，预览立即隐藏。
+    /// 注意：缩略图右上角的"关闭窗口"按钮不受此开关影响。
+    /// 实现侧：消费方在事件发生时直接读 `SettingsManager.shared.previewStaysVisible` 的当前值，
+    /// UI 通过 `@Published` 双向绑定刷新；无需 NotificationCenter 通知联动。
+    @Published var previewStaysVisible: Bool {
+        didSet {
+            defaults.set(previewStaysVisible, forKey: kPreviewStaysVisible)
+        }
+    }
+
+    @Published var shakeToFocusEnabled: Bool {
+        didSet {
+            defaults.set(shakeToFocusEnabled, forKey: kShakeToFocusEnabled)
+            NotificationCenter.default.post(name: .shakeToFocusChanged, object: nil)
+        }
+    }
+
+    /// 「再次摇晃恢复窗口」：作为「摇窗聚焦」的子开关。
+    /// - 开启时：再次摇晃任意窗口，且桌面已无其它可见窗口时，恢复上一次被自动最小化的窗口。
+    /// - 关闭时：摇晃永远只会执行聚焦逻辑，永远不会触发"恢复"分支。
+    @Published var shakeToFocusRestoreEnabled: Bool {
+        didSet {
+            defaults.set(shakeToFocusRestoreEnabled, forKey: kShakeToFocusRestoreEnabled)
+            NotificationCenter.default.post(name: .shakeToFocusRestoreChanged, object: nil)
+        }
+    }
+
     @Published var enableIndependentWindowControl: Bool {
         didSet {
             defaults.set(enableIndependentWindowControl, forKey: "enableIndependentWindowControl")
@@ -204,7 +238,26 @@ class SettingsManager: ObservableObject {
             defaults.set(true, forKey: kHoverPreviewEnabled)
         }
         self.hoverPreviewEnabled = defaults.bool(forKey: kHoverPreviewEnabled)
-        
+
+        // 加载「保持小窗显示」设置（默认开启）
+        if defaults.object(forKey: kPreviewStaysVisible) == nil {
+            defaults.set(true, forKey: kPreviewStaysVisible)
+        }
+        self.previewStaysVisible = defaults.bool(forKey: kPreviewStaysVisible)
+
+        // 加载「摇窗聚焦」设置（默认关闭，避免全局手势让新用户意外触发）
+        if defaults.object(forKey: kShakeToFocusEnabled) == nil {
+            defaults.set(false, forKey: kShakeToFocusEnabled)
+        }
+        self.shakeToFocusEnabled = defaults.bool(forKey: kShakeToFocusEnabled)
+
+        // 加载「再次摇晃恢复窗口」子开关（默认开启：用户既然开了摇窗聚焦，恢复能力是符合预期的体验。
+        // 即使误触发也是"恢复窗口"这种无害结果，不会造成数据/状态损失）
+        if defaults.object(forKey: kShakeToFocusRestoreEnabled) == nil {
+            defaults.set(true, forKey: kShakeToFocusRestoreEnabled)
+        }
+        self.shakeToFocusRestoreEnabled = defaults.bool(forKey: kShakeToFocusRestoreEnabled)
+
         // 加载子窗口独立控制设置（默认开启）
         if defaults.object(forKey: "enableIndependentWindowControl") == nil {
             defaults.set(true, forKey: "enableIndependentWindowControl")

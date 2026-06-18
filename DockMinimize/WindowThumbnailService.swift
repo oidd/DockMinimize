@@ -231,8 +231,14 @@ class WindowThumbnailService {
                     // 命中白名单 → 直接放行，不再做尺寸/标题启发式判断
                 } else {
                     // 启发式兜底（仅在从未拿到过 AX 列表时使用）
-                    if title.isEmpty { continue }
-                    if width < 200 || height < 200 { continue }
+                    // ⭐️ 修复：在此路径下我们完全没有窗口合法性数据，必须极保守过滤。
+                    // 内部渲染面/浮层/工具窗口 isOnScreen 必为 false，直接排除；
+                    // 尺寸阈值从 200 提升到 300，进一步排除小组件式内部窗口。
+                    guard let isOnScreen = windowInfo[kCGWindowIsOnscreen as String] as? Bool, isOnScreen else {
+                        continue
+                    }
+                    guard !title.isEmpty else { continue }
+                    guard width >= 300, height >= 200 else { continue }
                 }
             }
             
